@@ -4,7 +4,7 @@ WeebX is a local Apache, PHP and MySQL (MariaDB) control panel for Windows. You 
 
 It is meant as a XAMPP alternative: same job (Apache + PHP + MySQL on your machine), but with a proper desktop app, several PHP versions side by side, and an installer that does not wipe your sites when you update.
 
-Current release: **1.1.21**  
+Current release: **1.1.22**  
 Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
 
 ## Screenshot
