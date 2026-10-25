@@ -13,9 +13,7 @@ Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
 
 ## Video
 
-[WeebX walkthrough](docs/walkthrough.mp4)
-
-*Video will be available soon.*
+<video src="https://github.com/JadaDev/WeebX/raw/refs/heads/main/docs/walkthrough.mp4" controls width="100%"></video>
 
 ## Stack
 
