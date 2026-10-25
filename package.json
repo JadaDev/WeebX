@@ -1,0 +1,103 @@
+{
+  "name": "weebx",
+  "version": "1.1.29",
+  "description": "A modern local Apache, PHP and MariaDB control panel for Windows",
+  "main": "out/main/index.js",
+  "author": "JadaDev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JadaDev/WeebX.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JadaDev/WeebX/issues"
+  },
+  "homepage": "https://weebx.jadadev.com/",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
+    "dist": "npm run dist:msi",
+    "dist:msi": "npm run build && electron-builder --win msi --x64 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/assemble-release.ps1"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.3",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^3.0.0",
+    "png-to-ico": "^3.0.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^5.0.5"
+  },
+  "build": {
+    "appId": "com.jadadev.weebx",
+    "productName": "WeebX",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/runtime",
+        "to": "runtime"
+      },
+      {
+        "from": "build/assets/weebx-logo.png",
+        "to": "assets/weebx-logo.png"
+      },
+      {
+        "from": "resources/preparation.html",
+        "to": "preparation.html"
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "resources/setup_weebx.bat",
+        "to": "setup_weebx.bat"
+      },
+      {
+        "from": "resources/uninstall_weebx.bat",
+        "to": "Uninstall WeebX.bat"
+      }
+    ],
+    "win": {
+      "target": [
+        "msi"
+      ],
+      "icon": "build/assets/weebx.ico",
+      "artifactName": "WeebX-${version}-${arch}.${ext}",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "msi": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

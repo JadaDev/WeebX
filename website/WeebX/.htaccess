@@ -1,0 +1,3 @@
+Options -Indexes
+AddType application/octet-stream .msi
+AddType application/zip .zip

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+  <meta name="color-scheme" content="dark">
+  <title>Preparing WeebX</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 50% 18%, #1a2d73 0%, #0b1228 46%, #050810 100%);
+      font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+      color: #f2f5ff;
+    }
+    .card { width: min(640px, calc(100vw - 64px)); padding: 28px 36px 24px; text-align: center; }
+    .logo-wrap { height: 118px; display: grid; place-items: center; margin-bottom: 6px; }
+    .logo { width: 156px; height: 136px; object-fit: contain; filter: drop-shadow(0 18px 34px #2b5fff66); }
+    .logo.hidden { display: none; }
+    h1 { margin: 4px 0 8px; font-size: 30px; letter-spacing: -0.7px; }
+    .message { margin: 0; color: #bfcae3; font-size: 15px; min-height: 22px; }
+    .detail {
+      height: 22px; margin: 8px auto 18px; max-width: 540px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: #7382a5; font: 12px Consolas, "Cascadia Mono", monospace;
+    }
+    .track {
+      height: 10px; overflow: hidden; border: 1px solid #283759; border-radius: 99px;
+      background: #111a31; box-shadow: inset 0 1px 5px #0008;
+    }
+    .fill {
+      height: 100%; width: 0;
+      background: linear-gradient(90deg, #20d9ff, #665aff 55%, #dd40ff);
+      border-radius: inherit; box-shadow: 0 0 16px #6a69ff;
+      transition: width .18s ease;
+    }
+    .row { display: flex; justify-content: space-between; gap: 16px; margin-top: 10px; color: #93a2c1; font-size: 12px; }
+    .row strong { color: #ecf2ff; font-variant-numeric: tabular-nums; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; }
+    .stat {
+      padding: 10px 8px; border: 1px solid #1f2b48; border-radius: 9px; background: #0b1326aa;
+    }
+    .stat b, .stat span { display: block; }
+    .stat b { font-size: 12px; font-variant-numeric: tabular-nums; color: #e8eefc; }
+    .stat span { margin-top: 3px; color: #657392; font-size: 9px; text-transform: uppercase; letter-spacing: .8px; }
+    .note { margin: 16px 0 0; color: #5d6c8d; font-size: 11px; line-height: 1.5; }
+    @media (max-width: 680px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo-wrap"><img class="logo hidden" id="logo" alt="WeebX"></div>
+    <h1>Preparing WeebX</h1>
+    <p class="message" id="message">Inspecting the offline runtime</p>
+    <p class="detail" id="detail">Starting...</p>
+    <div class="track"><div class="fill" id="fill"></div></div>
+    <div class="row"><strong id="percent">0%</strong><span id="eta">Measuring speed...</span></div>
+    <div class="stats">
+      <div class="stat"><b id="files">0 / 0</b><span>Files</span></div>
+      <div class="stat"><b id="size">0 B / 0 B</b><span>Copied</span></div>
+      <div class="stat"><b id="speed">—</b><span>Speed</span></div>
+      <div class="stat"><b id="elapsed">0:00</b><span>Elapsed</span></div>
+    </div>
+    <p class="note" id="note">First-run copy can take several minutes, especially while Windows scans the new files. You can close this window safely; preparation resumes on the next launch.</p>
+  </main>
+  <script>
+    const state = {
+      message: 'Inspecting the offline runtime',
+      detail: 'Starting...',
+      percent: 0,
+      completedFiles: 0,
+      totalFiles: 0,
+      completedBytes: 0,
+      totalBytes: 0,
+      elapsedSeconds: 0,
+      etaSeconds: null,
+      speedBytesPerSecond: 0,
+      receivedAt: Date.now()
+    };
+
+    const formatTime = (seconds, empty) => {
+      if (seconds == null || !Number.isFinite(seconds)) return empty;
+      seconds = Math.max(0, Math.round(seconds));
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const rest = seconds % 60;
+      if (hours) return hours + 'h ' + minutes + 'm remaining';
+      if (minutes) return minutes + 'm ' + rest + 's remaining';
+      return rest + 's remaining';
+    };
+    const formatBytes = (value) => {
+      const amount = Math.max(0, Number(value) || 0);
+      if (amount < 1024) return Math.round(amount) + ' B';
+      const units = ['KB', 'MB', 'GB'];
+      const index = Math.min(units.length - 1, Math.floor(Math.log(amount) / Math.log(1024)) - 1);
+      const scaled = amount / Math.pow(1024, index + 1);
+      return scaled.toFixed(scaled >= 100 ? 0 : 1) + ' ' + units[index];
+    };
+    const clock = (seconds) => {
+      const value = Math.max(0, Math.floor(seconds || 0));
+      const hours = Math.floor(value / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      const rest = value % 60;
+      if (hours) return hours + ':' + String(minutes).padStart(2, '0') + ':' + String(rest).padStart(2, '0');
+      return minutes + ':' + String(rest).padStart(2, '0');
+    };
+    const render = () => {
+      const extra = (Date.now() - state.receivedAt) / 1000;
+      const elapsed = (state.elapsedSeconds || 0) + extra;
+      const eta = state.etaSeconds == null ? null : Math.max(0, state.etaSeconds - extra);
+      document.getElementById('message').textContent = state.message || 'Preparing WeebX';
+      document.getElementById('detail').textContent = state.detail || '';
+      document.getElementById('fill').style.width = Math.max(0, Math.min(100, state.percent || 0)) + '%';
+      document.getElementById('percent').textContent = Math.round(state.percent || 0) + '%';
+      document.getElementById('files').textContent = (state.completedFiles || 0).toLocaleString() + ' / ' + (state.totalFiles || 0).toLocaleString();
+      document.getElementById('size').textContent = formatBytes(state.completedBytes || 0) + ' / ' + formatBytes(state.totalBytes || 0);
+      document.getElementById('speed').textContent = state.speedBytesPerSecond > 512 ? formatBytes(state.speedBytesPerSecond) + '/s' : '—';
+      document.getElementById('elapsed').textContent = clock(elapsed);
+      document.getElementById('eta').textContent = formatTime(eta, elapsed < 3 ? 'Measuring speed...' : 'Still working...');
+    };
+
+    window.__weebxBoot = (boot) => {
+      if (!boot || !boot.logoDataUrl) return;
+      const logo = document.getElementById('logo');
+      logo.src = boot.logoDataUrl;
+      logo.classList.remove('hidden');
+    };
+    window.__weebxProgress = (next) => {
+      Object.assign(state, next || {});
+      state.receivedAt = Date.now();
+      render();
+    };
+    try {
+      if (window.weebx && window.weebx.onPreparationProgress) {
+        window.weebx.onPreparationProgress((next) => window.__weebxProgress(next));
+      }
+    } catch (error) { /* preload is optional on this bootstrap page */ }
+    setInterval(render, 250);
+    render();
+  </script>
+</body>
+</html>

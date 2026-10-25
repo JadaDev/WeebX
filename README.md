@@ -7,6 +7,36 @@ It is meant as a XAMPP alternative: same job (Apache + PHP + MySQL on your machi
 Current release: **1.1.29**  
 Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
 
+## This is the complete application source
+
+This repository contains the auditable TypeScript, React and Electron source
+for WeebX, its tests, preload bridge, main-process service management, website,
+runtime preparation scripts and Windows build configuration.
+
+Electron itself is not committed to Git. Running `npm ci` downloads the exact
+Electron and JavaScript dependency versions recorded in `package-lock.json`.
+The large Apache, PHP, MariaDB and phpMyAdmin binary archives are also excluded;
+`npm run prepare:runtime` downloads their pinned upstream releases and verifies
+their SHA-256 hashes before extraction. Compiled output, installers, databases,
+download statistics and user websites are never part of the source repository.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development instructions,
+[SECURITY.md](SECURITY.md) for private vulnerability reporting, and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licensing.
+
+## What's new in 1.1.29
+
+- Optional automatic crash recovery for Apache and MySQL
+- Per-service dashboard switches that can be changed while a service is running or stopped
+- Recovery delay choices: 5 seconds, 10 seconds, 30 seconds, 1 minute, or 5 minutes
+- Intentional stops and restarts are logged as information instead of false exit-code errors
+- Genuine crashes retain detailed Apache or MariaDB diagnostic output
+- Redesigned scrolling for the PHP and Apache module containers
+- Redesigned download website with policy consent, live download counts, metadata, loading animation, and cache-busted assets
+- Reliable first-run preparation that creates the complete runtime folder tree before parallel copying begins
+
+Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
+
 ## Screenshot
 
 ![WeebX screenshot](docs/screenshot.png)
@@ -40,6 +70,7 @@ Windows 10 / 11, x64. You will also need the usual Visual C++ x64 runtime that A
 - Scan HTTP, HTTPS and MySQL ports and who owns them
 - Open the local site and phpMyAdmin
 - Recent activity from the stack
+- Turn automatic crash recovery on or off independently for Apache and MySQL
 
 ### Virtual hosts
 
@@ -74,6 +105,7 @@ Validate Apache / PHP / MariaDB config from the same screen. Saves keep a `.weeb
 ### Logs
 
 Apache, MySQL and WeebX messages in one list, with a filter.
+Intentional stops and restarts stay informational. Unexpected exits are errors and include the available process diagnostics and scheduled recovery delay.
 
 ### Portal packing
 
@@ -96,6 +128,7 @@ Unpack on the other machine and launch. WeebX rebases paths so Apache and MySQL 
 - Start WeebX with Windows
 - Keep running in the tray
 - Check port ownership before start
+- Choose the automatic-restart delay: 5 seconds, 10 seconds, 30 seconds, 1 minute, or 5 minutes
 - Administrator vs standard (hosts file needs admin)
 
 ### Tray
@@ -119,18 +152,20 @@ From the tray or from Apps. You type `UNINSTALL` to confirm. Apache and MySQL ar
 
 Default ports: HTTP 80, HTTPS 443, MySQL 3306. Root has no password until you set one.
 
+The public download page lives in `website/WeebX`. Copy that folder into Apache `htdocs`, then drop `WeebX-Installer-x64.msi` and `WeebX.zip` into `htdocs/WeebX/Files`. The page picks them up on its own.
+
 ## Build it yourself
 
-Node.js 22+, Windows x64.
+Node.js 22+, Windows x64. Electron does not need to be installed globally.
 
 ```powershell
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run dev
 ```
 
-Offline runtime + MSI:
+Download and verify the pinned runtime, then build the MSI:
 
 ```powershell
 npm run prepare:runtime
