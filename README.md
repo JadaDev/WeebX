@@ -11,8 +11,6 @@ Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
 
 ![WeebX screenshot](docs/screenshot.png)
 
-*Screenshot will be available soon.*
-
 ## Video
 
 [WeebX walkthrough](docs/walkthrough.mp4)
