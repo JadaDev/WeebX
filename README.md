@@ -13,8 +13,11 @@ Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
 
 ## Video
 
-<video src="https://github.com/JadaDev/WeebX/raw/refs/heads/main/docs/walkthrough.mp4" controls width="100%"></video>
+### WeebX Walkthrough
 
+Watch WeebX in action! See how to manage Apache, MariaDB (MySQL), PHP, virtual hosts, and more.
+
+https://github.com/user-attachments/assets/a8205b58-199b-413c-bf54-ad81d04361f0
 ## Stack
 
 | Piece | Version |
