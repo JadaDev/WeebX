@@ -12,6 +12,7 @@ describe('stack shutdown matching', () => {
     expect(shouldStopProcess({ pid: 11, name: 'mariadbd.exe', path: `${runtime}\\mariadb\\bin\\mariadbd.exe` }, runtime, 99)).toBe(true)
     expect(shouldStopProcess({ pid: 99, name: 'WeebX.exe', path: 'C:\\Program Files\\WeebX\\WeebX.exe' }, runtime, 99)).toBe(false)
     expect(shouldStopProcess({ pid: 12, name: 'WeebX.exe', path: 'C:\\Program Files\\WeebX\\WeebX.exe' }, runtime, 99)).toBe(true)
+    expect(shouldStopProcess({ pid: 16, name: 'WeebX Core.exe', path: 'C:\\Program Files\\WeebX\\WeebX Core.exe' }, runtime, 99)).toBe(true)
     expect(shouldStopProcess({ pid: 14, parentPid: 99, name: 'WeebX.exe', path: 'C:\\Program Files\\WeebX\\WeebX.exe', commandLine: 'WeebX.exe --type=renderer' }, runtime, 99)).toBe(false)
     expect(shouldStopProcess({ pid: 15, parentPid: 12, name: 'WeebX.exe', path: 'C:\\Program Files\\WeebX\\WeebX.exe', commandLine: 'WeebX.exe --type=utility' }, runtime, 99)).toBe(false)
     expect(shouldStopProcess({ pid: 13, name: 'httpd.exe', path: 'C:\\Apache24\\bin\\httpd.exe' }, runtime, 99)).toBe(false)

@@ -1,5 +1,5 @@
 import { safeStorage } from 'electron'
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { RuntimeSettings, VirtualHost } from '../shared/types'
 import { defaultSettings } from './defaults'
@@ -7,12 +7,14 @@ import { defaultSettings } from './defaults'
 interface StoreData {
   settings: RuntimeSettings
   virtualHosts: VirtualHost[]
+  siteDatabasePasswords: Record<string, string>
 }
 
 interface StoredData {
   settings?: Partial<RuntimeSettings>
   virtualHosts?: VirtualHost[]
   mariadbPasswordProtected?: string
+  siteDatabasePasswordsProtected?: string
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -39,6 +41,7 @@ async function unprotectPassword(value: string): Promise<{ password: string; sho
 
 export class JsonStore {
   private data: StoreData | null = null
+  private saveQueue: Promise<void> = Promise.resolve()
 
   constructor(private readonly file: string) {}
 
@@ -52,14 +55,25 @@ export class JsonStore {
       const decrypted = saved.mariadbPasswordProtected !== undefined
         ? await unprotectPassword(saved.mariadbPasswordProtected)
         : { password: legacyPassword ?? defaults.mariadbPassword, shouldReEncrypt: false }
+      const siteSecrets = saved.siteDatabasePasswordsProtected
+        ? await unprotectPassword(saved.siteDatabasePasswordsProtected)
+        : { password: '{}', shouldReEncrypt: false }
+      let siteDatabasePasswords: Record<string, string> = {}
+      try {
+        const parsed = JSON.parse(siteSecrets.password) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          siteDatabasePasswords = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+        }
+      } catch { throw new Error('The saved isolated-site database credentials are damaged. Reset the affected site credentials.') }
       this.data = {
         settings: { ...defaults, ...saved.settings, mariadbPassword: decrypted.password },
-        virtualHosts: Array.isArray(saved.virtualHosts) ? saved.virtualHosts : []
+        virtualHosts: Array.isArray(saved.virtualHosts) ? saved.virtualHosts : [],
+        siteDatabasePasswords
       }
-      if (legacyPassword !== undefined || saved.mariadbPasswordProtected === undefined || decrypted.shouldReEncrypt) await this.save()
+      if (legacyPassword !== undefined || saved.mariadbPasswordProtected === undefined || decrypted.shouldReEncrypt || siteSecrets.shouldReEncrypt) await this.save()
     } catch (error) {
       if (!isMissingFile(error)) throw error
-      this.data = { settings: defaultSettings(), virtualHosts: [] }
+      this.data = { settings: defaultSettings(), virtualHosts: [], siteDatabasePasswords: {} }
       await this.save()
     }
     return this.data
@@ -85,18 +99,47 @@ export class JsonStore {
     await this.save()
   }
 
+  async getSiteDatabasePassword(siteId: string): Promise<string> {
+    return (await this.load()).siteDatabasePasswords[siteId] ?? ''
+  }
+
+  async setSiteDatabasePassword(siteId: string, password: string): Promise<void> {
+    const data = await this.load()
+    data.siteDatabasePasswords[siteId] = password
+    await this.save()
+  }
+
+  async deleteSiteDatabasePassword(siteId: string): Promise<void> {
+    const data = await this.load()
+    delete data.siteDatabasePasswords[siteId]
+    await this.save()
+  }
+
   private async save(): Promise<void> {
+    const pending = this.saveQueue.catch(() => undefined).then(() => this.writeSnapshot())
+    this.saveQueue = pending
+    await pending
+  }
+
+  private async writeSnapshot(): Promise<void> {
     if (!this.data) return
     await mkdir(dirname(this.file), { recursive: true })
-    const temporary = join(dirname(this.file), `${Date.now()}.tmp`)
+    const temporary = join(dirname(this.file), `${Date.now()}-${crypto.randomUUID()}.tmp`)
     const { mariadbPassword, ...settings } = this.data.settings
     const stored = {
       settings,
       virtualHosts: this.data.virtualHosts,
-      mariadbPasswordProtected: await protectPassword(mariadbPassword)
+      mariadbPasswordProtected: await protectPassword(mariadbPassword),
+      siteDatabasePasswordsProtected: Object.keys(this.data.siteDatabasePasswords).length
+        ? await protectPassword(JSON.stringify(this.data.siteDatabasePasswords))
+        : ''
     }
-    await writeFile(temporary, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 })
-    await rename(temporary, this.file)
-    await chmod(this.file, 0o600).catch(() => undefined)
+    try {
+      await writeFile(temporary, JSON.stringify(stored, null, 2), { encoding: 'utf8', mode: 0o600 })
+      await rename(temporary, this.file)
+      await chmod(this.file, 0o600).catch(() => undefined)
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined)
+    }
   }
 }

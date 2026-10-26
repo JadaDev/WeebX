@@ -14,6 +14,11 @@ import { RuntimeSeeder } from './runtime-seeder'
 import { RelocationManager } from './relocation-manager'
 import { pointUninstallToApp } from './stack-shutdown'
 import { applyPermissionPreset } from './permissions'
+import { bundledFile, preloadScript, rendererIndex } from './app-paths'
+
+// Chromium's crash reporter is not used by WeebX. Avoid launching that extra
+// native helper while antivirus software is still inspecting a fresh install.
+if (process.platform === 'win32') app.commandLine.appendSwitch('disable-breakpad')
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -30,6 +35,14 @@ if (dataDirectoryArgument) {
 
 function firstExisting(...paths: string[]): string {
   return paths.find((path) => existsSync(path)) || paths[0]
+}
+
+function preloadPath(): string {
+  return firstExisting(preloadScript(app.getAppPath()), bundledFile(import.meta.url, '../preload/index.js'))
+}
+
+function rendererPath(): string {
+  return firstExisting(rendererIndex(app.getAppPath()), bundledFile(import.meta.url, '../renderer/index.html'))
 }
 
 function brandPath(): string {
@@ -91,7 +104,34 @@ async function createWindow(): Promise<void> {
     width: 1360, height: 860, minWidth: 1040, minHeight: 680, show: false,
     backgroundColor: '#0d1220', icon: brandPath(), titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0d1220', symbolColor: '#b7c0d6', height: 42 },
-    webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: true, contextIsolation: true, nodeIntegration: false }
+    webPreferences: { preload: preloadPath(), sandbox: true, contextIsolation: true, nodeIntegration: false }
+  })
+  let rendererRecoveryAttempts = 0
+  let rendererRecoveryTimer: NodeJS.Timeout | null = null
+  const loadCurrentPage = async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (preparing) await mainWindow.loadFile(preparationPage())
+    else if (is.dev && process.env.ELECTRON_RENDERER_URL) await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    else await mainWindow.loadFile(rendererPath())
+  }
+  const scheduleRendererRecovery = (reason: string) => {
+    if (quitting || !mainWindow || mainWindow.isDestroyed() || rendererRecoveryTimer) return
+    rendererRecoveryAttempts += 1
+    const delay = Math.min(10000, 500 * (2 ** Math.min(rendererRecoveryAttempts - 1, 4)))
+    console.error(`[renderer] ${reason}; retrying in ${delay}ms (attempt ${rendererRecoveryAttempts}).`)
+    rendererRecoveryTimer = setTimeout(() => {
+      rendererRecoveryTimer = null
+      void loadCurrentPage()
+        .then(() => { rendererRecoveryAttempts = 0 })
+        .catch((error) => scheduleRendererRecovery(error instanceof Error ? error.message : String(error)))
+    }, delay)
+  }
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (!quitting && details.reason !== 'clean-exit') scheduleRendererRecovery(`process exited: ${details.reason} (${details.exitCode})`)
+  })
+  mainWindow.on('closed', () => {
+    if (rendererRecoveryTimer) clearTimeout(rendererRecoveryTimer)
+    rendererRecoveryTimer = null
   })
   mainWindow.on('close', (event) => {
     if (preparing && !closeRequested) {
@@ -172,6 +212,7 @@ async function createWindow(): Promise<void> {
         }
       }
     }
+    await vhosts.render()
     await relocation.writeCurrentStamp()
     if (preparationController.signal.aborted) throw cancelledError()
 
@@ -182,8 +223,9 @@ async function createWindow(): Promise<void> {
     if (preparationController.signal.aborted) throw cancelledError()
 
     if (is.dev && process.env.ELECTRON_RENDERER_URL) await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
-    else await mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    else await mainWindow.loadFile(rendererPath())
     preparing = false
+    rendererRecoveryAttempts = 0
     const settings = await store.getSettings()
     app.setLoginItemSettings({
       openAtLogin: settings.startWithWindows,
@@ -289,7 +331,7 @@ function wantsUninstall(): boolean {
 
 async function loadUninstallPage(window: BrowserWindow): Promise<void> {
   if (is.dev && process.env.ELECTRON_RENDERER_URL) await window.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=uninstall#uninstall`)
-  else await window.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'uninstall', query: { mode: 'uninstall' } })
+  else await window.loadFile(rendererPath(), { hash: 'uninstall', query: { mode: 'uninstall' } })
 }
 
 function enterUninstallMode(): void {
@@ -339,7 +381,7 @@ async function createUninstallWindow(): Promise<void> {
     backgroundColor: '#0d1220', icon: brandPath(), titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0d1220', symbolColor: '#b7c0d6', height: 42 },
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: preloadPath(),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

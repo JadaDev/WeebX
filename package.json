@@ -1,6 +1,6 @@
 {
   "name": "weebx",
-  "version": "2.0.5",
+  "version": "2.1.1",
   "description": "A Local Web Hosting Stack Manager for Windows with Apache, PHP and MariaDB",
   "main": "out/main/index.js",
   "author": "JadaDev",
@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "prepare:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
     "dist": "npm run dist:msi",
-    "dist:msi": "npm run build && electron-builder --win msi --x64 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/assemble-release.ps1"
+    "dist:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-production-release.ps1",
+    "dist:unsigned": "npm run build && electron-builder --win msi --x64 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/assemble-release.ps1"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

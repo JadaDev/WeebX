@@ -62,7 +62,7 @@ function assetUrl(string $relativePath): string
     return $relativePath . '?v=' . rawurlencode($version);
 }
 
-$version = '2.0.5';
+$version = '2.1.1';
 $filesDir = __DIR__ . DIRECTORY_SEPARATOR . 'Files';
 $msi = pickDownload($filesDir, 'msi', ['WeebX-Installer-x64.msi']);
 $zip = pickDownload($filesDir, 'zip', ['WeebX.zip', 'WeebX-Portable.zip']);
@@ -131,7 +131,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         <div class="hero-copy">
             <span class="eyebrow"><i></i> BUILT FOR WINDOWS HOSTING</span>
             <h1>Local Web Hosting<br><em>Stack Manager.</em></h1>
-            <p class="lead">Run Apache, PHP, MariaDB and phpMyAdmin from one focused control panel—with a development-first workflow, a hardened Live / Production profile, virtual hosts, safer updates, and automatic crash recovery.</p>
+            <p class="lead">Run Apache, PHP, MariaDB and phpMyAdmin from one focused control panel—with isolated per-site runtimes, least-privilege database identities, a hardened Live / Production profile, safer updates, and automatic crash recovery.</p>
             <div class="hero-actions">
                 <?php if ($msi): ?>
                     <a class="button primary download-trigger" href="<?= e($msi['href']) ?>" data-file="<?= e($msi['name']) ?>">Download for Windows <span>↓</span></a>
@@ -169,7 +169,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         <div class="feature-grid">
             <article class="feature-card featured"><div class="feature-icon">◫</div><span>CONTROL</span><h3>Start, stop, recover.</h3><p>Manage Apache and MariaDB independently or together. Optional crash recovery restarts either service after the delay you choose.</p><div class="mini-service-pair"><div class="mini-status"><i></i><b>Apache is running</b><small>2.4.69 · Auto-restart on</small></div><div class="mini-status"><i></i><b>MariaDB is running</b><small>12.3.3 · Loopback only</small></div></div></article>
             <article class="feature-card"><div class="feature-icon">&lt;/&gt;</div><span>PHP</span><h3>Switch versions cleanly.</h3><p>Use bundled builds, discover new official x64 NTS releases automatically, or validate and import your own PHP ZIP.</p></article>
-            <article class="feature-card"><div class="feature-icon">⌂</div><span>SITES</span><h3>Virtual hosts in minutes.</h3><p>Create local domains, project folders, HTTPS certificates, aliases, and hosts-file mappings from one form.</p></article>
+            <article class="feature-card"><div class="feature-icon">⌂</div><span>ISOLATED SITES</span><h3>One policy per website.</h3><p>Give every host its own PHP version, extensions, php.ini, sessions, temporary storage, upload limits, logs, database user, and NTFS permission policy.</p></article>
             <article class="feature-card"><div class="feature-icon">⌁</div><span>PORTABLE</span><h3>Your projects stay yours.</h3><p>Keep websites and MariaDB data through normal updates, or pack the whole environment when you need to move it.</p></article>
             <article class="feature-card"><div class="feature-icon">⚙</div><span>MODULES</span><h3>Configure visually.</h3><p>Search and toggle PHP and Apache modules, edit core configuration, and validate changes before they go live.</p></article>
             <article class="feature-card"><div class="feature-icon">◎</div><span>VISIBILITY</span><h3>Know what happened.</h3><p>Inspect ports and detailed service logs. Intentional shutdowns stay informational; genuine failures retain diagnostics.</p></article>
@@ -178,7 +178,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     </section>
 
     <section class="section-shell php-manager-showcase" aria-label="WeebX PHP version manager preview">
-        <div class="section-heading"><span>PHP VERSION CONTROL</span><h2>Install, validate, and switch<br>without rebuilding your stack.</h2><p>The preview mirrors the real WeebX 2.0.5 PHP manager: isolated versions, environment profiles, official release discovery, and guided manual import.</p></div>
+        <div class="section-heading"><span>PHP VERSION CONTROL</span><h2>Install, validate, and switch<br>without rebuilding your stack.</h2><p>The preview mirrors the real WeebX 2.1.1 PHP manager: isolated versions, environment profiles, official release discovery, and guided manual import.</p></div>
         <figure class="php-manager-window">
             <div class="php-shot-head"><div><small>PHP RUNTIME</small><b>PHP versions</b></div><button>+ Add PHP version</button><div class="php-shot-profile"><span class="active">Development</span><span>Live / Production</span></div><em>Active <b>8.5.12</b></em></div>
             <div class="php-shot-list">
@@ -191,8 +191,22 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         </figure>
     </section>
 
+    <section class="section-shell isolation-showcase" aria-label="WeebX isolated site profile preview">
+        <div class="section-heading"><span>ISOLATED SITE PROFILES</span><h2>Each website gets<br>its own operating policy.</h2><p>Choose exactly how one site runs without changing every other project in the stack.</p></div>
+        <figure class="isolation-window">
+            <div class="isolation-head"><div><small>ISOLATION · PORTAL.EXAMPLE.COM</small><b>Isolated profile enabled</b><span>Dedicated PHP settings and runtime storage.</span></div><em>Enabled</em></div>
+            <div class="isolation-summary"><div><small>PHP</small><b>8.5.12 · Live / Production</b></div><div><small>PROFILE STORAGE</small><b>C:\WeebX\site-profiles\portal</b></div><div><small>DATABASE IDENTITY</small><b>portal_app</b></div></div>
+            <div class="isolation-tabs"><b>PHP runtime</b><span>Limits &amp; uploads</span><span>Database</span><span>Security</span><span>Advanced php.ini</span><span>Site logs</span></div>
+            <div class="isolation-body">
+                <div class="isolation-runtime"><div class="isolation-selects"><label><small>PHP VERSION</small><b>8.5.12 <i>⌄</i></b></label><label><small>ENVIRONMENT</small><b>Live / Production <i>⌄</i></b></label></div><div class="isolation-extension-head"><b>PHP extensions</b><span>10 enabled</span></div><div class="isolation-chips"><i>✓ curl</i><i>✓ fileinfo</i><i>✓ gd</i><i>✓ intl</i><i>✓ mbstring</i><i>✓ mysqli</i><i>✓ openssl</i><i>✓ pdo_mysql</i><i>✓ sodium</i><i>✓ zip</i></div></div>
+                <aside class="isolation-security"><span>BOUNDARIES ACTIVE</span><div><i>✓</i><p><b>Private runtime storage</b><small>Sessions, temp, uploads, and logs stay outside htdocs.</small></p></div><div><i>✓</i><p><b>Restricted filesystem</b><small>open_basedir limits PHP to this site and its profile.</small></p></div><div><i>✓</i><p><b>Least-privilege database</b><small>One strong-password user, scoped to one database.</small></p></div><div><i>✓</i><p><b>Private NTFS policy</b><small>Owner, SYSTEM, and administrators only.</small></p></div></aside>
+            </div>
+            <figcaption>Advanced when you need it, safe by default. Credentials are Windows-encrypted, reveal only after confirmation, and never travel inside a Portal export.</figcaption>
+        </figure>
+    </section>
+
     <section id="stack" class="section-shell stack-section">
-        <div class="stack-copy"><span class="eyebrow"><i></i> CURRENT RUNTIME</span><h2>A complete stack.<br><em>Ready when you are.</em></h2><p>WeebX brings the familiar local-server pieces together without hiding their configuration files or locking your work into a proprietary format. MariaDB is the community-developed open-source fork of MySQL; it keeps the familiar protocol and PHP drivers while WeebX uses the accurate MariaDB name throughout the interface.</p><ul><li>Multiple supported PHP versions</li><li>Apache module and php.ini controls</li><li>MariaDB credentials and port management</li><li>Built-in phpMyAdmin access</li></ul></div>
+        <div class="stack-copy"><span class="eyebrow"><i></i> CURRENT RUNTIME</span><h2>A complete stack.<br><em>Ready when you are.</em></h2><p>WeebX brings the familiar local-server pieces together without hiding their configuration files or locking your work into a proprietary format. MariaDB is the community-developed open-source fork of MySQL; it keeps the familiar protocol and PHP drivers while WeebX uses the accurate MariaDB name throughout the interface.</p><ul><li>Multiple supported PHP versions</li><li>Per-site PHP, extensions, storage, logs, and limits</li><li>Least-privilege MariaDB users per site</li><li>Apache module, php.ini, and NTFS permission controls</li><li>Built-in local-only phpMyAdmin access</li></ul></div>
         <div class="stack-grid">
             <article><small>WEB SERVER</small><b>Apache</b><strong>2.4.69</strong></article>
             <article><small>DATABASE</small><b>MariaDB</b><strong>12.3.3</strong></article>
@@ -232,7 +246,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
             <div><span>THE RISK OF OLD PHP</span><h3>An outdated web server can become an attack path.</h3><p>Unpatched affected PHP workers serving web requests may allow an unauthenticated attacker to execute code, access data available to that worker, or cause denial of service. PHP identifies Apache <code>mod_php</code> as the highest-risk setup. PHP 8.1 and older are no longer supported upstream; a vendor may provide backports, but moving to a supported patched branch is the safer default.</p></div>
             <a href="#download">Upgrade with WeebX <span>&rarr;</span></a>
         </aside>
-        <p class="security-footnote">WeebX starts in Development, lets the user choose an empty or non-empty MariaDB password, and makes the risk visible with environment-aware warnings. Before public hosting, switch to Live / Production and resolve every password warning. MariaDB stays on loopback, phpMyAdmin and diagnostics remain local-only, directory listings are disabled, and PHP session upload progress is disabled following the latest upstream guidance. Public hosting still requires trusted TLS, firewall policy, application hardening, backups, monitoring, and prompt updates.</p>
+        <p class="security-footnote">WeebX starts in Development, lets the user choose an empty or non-empty MariaDB password, and makes the risk visible with environment-aware warnings. Isolated site profiles separate PHP configuration, writable storage, logs, limits, permissions, and database identities; credentials are Windows-encrypted and never exported. Before public hosting, switch each site to Live / Production and resolve every password warning. MariaDB stays on loopback, phpMyAdmin and diagnostics remain local-only, directory listings are disabled, and PHP session upload progress is disabled. Site profiles are defense in depth under one Windows account—hostile multi-tenant workloads still require separate accounts, containers, VMs, or hosts. Public hosting also requires trusted TLS, firewall policy, application hardening, backups, monitoring, and prompt updates.</p>
     </section>
 
     <section id="download" class="section-shell download-section">

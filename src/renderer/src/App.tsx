@@ -5,7 +5,7 @@ import {
   Orbit, Play, Plus, Power, RefreshCw, RotateCw, Save, Server, Settings, ShieldCheck,
   Square, Terminal, Trash2, Upload, Wrench, X, Zap
 } from 'lucide-react'
-import type { DashboardSnapshot, InstallProgress, LogEntry, PermissionPreset, PermissionTarget, PhpRelease, PublicRuntimeSettings, RuntimeSettings, ServiceId, ServiceStatus, VhostDraft } from '../../shared/types'
+import type { DashboardSnapshot, InstallProgress, LogEntry, PermissionPreset, PermissionTarget, PhpRelease, PublicRuntimeSettings, RuntimeSettings, ServiceId, ServiceStatus, SiteDatabaseCredential, SiteIsolationDraft, SiteLogKind, SiteLogSnapshot, SiteProfileOptions, VhostDraft, VirtualHost } from '../../shared/types'
 import { APACHE_VERSION, MARIADB_VERSION, PHPMYADMIN_VERSION, WEEBX_VERSION } from '../../shared/version'
 import logoUrl from './assets/weebx-logo.png'
 import { ActionButton } from './ActionButton'
@@ -191,43 +191,121 @@ function ServiceCard({ service, settings, phpMyAdminUrl, websiteUrl, run, onChan
   </article>
 }
 
+function defaultSiteIsolation(version: string, name = 'site'): SiteIsolationDraft {
+  const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'site'
+  return {
+    phpVersion: version, phpProfile: 'development',
+    phpExtensions: ['curl', 'fileinfo', 'gd', 'intl', 'mbstring', 'mysqli', 'openssl', 'pdo_mysql', 'sodium', 'zip'],
+    memoryLimit: '256M', maxExecutionTime: 120, maxInputTime: 60, maxInputVars: 3000,
+    uploadMaxFilesize: '64M', postMaxSize: '64M', maxFileUploads: 20,
+    openBasedir: true, disableDangerousFunctions: false, allowUserIni: false,
+    permissionPreset: 'private', customIni: '',
+    database: undefined
+  }
+}
+
+function editableIsolation(site: VirtualHost, fallbackVersion: string): SiteIsolationDraft {
+  if (!site.isolation) return defaultSiteIsolation(fallbackVersion, site.name)
+  return { ...site.isolation, phpExtensions: [...site.isolation.phpExtensions], database: site.isolation.database ? { ...site.isolation.database, password: '' } : undefined }
+}
+
 function Sites({ data, run }: { data: DashboardSnapshot; run: Runner }) {
   const [show, setShow] = useState(false)
   const [help, setHelp] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [draft, setDraft] = useState<VhostDraft>({ name: '', serverName: '', aliases: [], http: true, https: false, updateHosts: true })
+  const [editing, setEditing] = useState<VirtualHost | null>(null)
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [editIsolation, setEditIsolation] = useState<SiteIsolationDraft | undefined>()
+  const [options, setOptions] = useState<SiteProfileOptions | null>(null)
+  const [credential, setCredential] = useState<SiteDatabaseCredential | null>(null)
+  const [siteLog, setSiteLog] = useState<SiteLogSnapshot | null>(null)
+  const [draft, setDraft] = useState<VhostDraft>(() => ({ name: '', serverName: '', aliases: [], http: true, https: false, updateHosts: true, isolation: defaultSiteIsolation(data.settings.activePhpVersion) }))
+  const loadOptions = async (version: string, applyRecommended = false) => {
+    const next = await run(() => window.weebx.siteProfileOptions(version), false)
+    if (!next) return
+    setOptions(next)
+    const update = (profile: SiteIsolationDraft | undefined) => profile ? { ...profile, phpVersion: version, phpExtensions: applyRecommended ? next.recommendedExtensions : profile.phpExtensions.filter((item) => next.extensions.includes(item)) } : profile
+    if (editing) setEditIsolation((old) => update(old))
+    else setDraft((old) => ({ ...old, isolation: update(old.isolation) }))
+  }
+  useEffect(() => {
+    const profile = editing ? editIsolation : show ? draft.isolation : undefined
+    if (profile) void loadOptions(profile.phpVersion)
+  }, [show, editing?.id])
+  useEffect(() => {
+    if (!credential) return
+    const timeout = window.setTimeout(() => setCredential(null), 30000)
+    const hide = () => setCredential(null)
+    window.addEventListener('blur', hide)
+    return () => { window.clearTimeout(timeout); window.removeEventListener('blur', hide) }
+  }, [credential])
+  const openCreate = () => {
+    setDraft({ name: '', serverName: '', aliases: [], http: true, https: false, updateHosts: true, isolation: defaultSiteIsolation(data.settings.activePhpVersion) })
+    setOptions(null); setShow(true)
+  }
   const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    setCreating(true)
+    event.preventDefault(); setCreating(true)
     try {
-      if (await run(() => window.weebx.createVhost(draft))) {
-        setShow(false)
-        setHelp(false)
-        setDraft({ name: '', serverName: '', aliases: [], http: true, https: false, updateHosts: true })
-      }
+      if (await run(() => window.weebx.createVhost(draft))) { setShow(false); setHelp(false) }
     } finally { setCreating(false) }
   }
-  return <><div className="page-toolbar"><div><h2>Virtual hosts</h2><p>Each site gets its own folder, domain and optional local certificate.</p></div><ActionButton className="primary" icon={<Plus size={16} />} label="New site" onClick={() => { setShow(true) }} /></div>
-    <div className="site-list">{data.virtualHosts.map((site) => <article key={site.id}><div className="site-glyph"><Globe2 size={20} /></div><div className="site-main"><div><h3>{site.serverName}</h3><span className={site.enabled ? 'enabled' : 'disabled'}>{site.enabled ? 'Enabled' : 'Disabled'}</span></div><p>{site.documentRoot}</p><div className="tags">{site.http && <span>HTTP</span>}{site.https && <span><LockKeyhole size={11} /> HTTPS</span>}{site.aliases.map((alias) => <span key={alias}>{alias}</span>)}</div></div><div className="row-actions"><ActionButton title="Open folder" icon={<FolderOpen size={17} />} onClick={async () => (await run(() => window.weebx.openPath(site.documentRoot), false)) !== undefined} /><ActionButton title={site.enabled ? 'Disable' : 'Enable'} icon={<Power size={17} />} onClick={async () => (await run(() => window.weebx.setVhostEnabled(site.id, !site.enabled))) !== undefined} /><ActionButton className="trash" title="Remove (files are preserved)" icon={<Trash2 size={17} />} onClick={async () => { if (!confirm(`Remove ${site.serverName}? Project files will be preserved.`)) return false; return (await run(() => window.weebx.deleteVhost(site.id))) !== undefined }} /></div></article>)}{!data.virtualHosts.length && <div className="big-empty"><Globe2 size={30} /><h3>No virtual hosts yet</h3><p>Create a project and map a local domain in under a minute.</p><ActionButton icon={<Plus size={16} />} label="Create your first site" onClick={() => { setShow(true) }} /></div>}</div>
-    {show && <Modal title="Create virtual host" onClose={() => { setShow(false); setHelp(false) }}><form className="form" onSubmit={(event) => void submit(event)}>
-      <label><FieldHint text="Project Name (Folder)" tip="Folder WeebX creates inside htdocs for this site's files. Example: test-jadadev-com" /><input required placeholder="test-jadadev-com" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
-      <label><FieldHint text="Server name" tip="The domain Apache will answer for, such as test.jadadev.com. Visitors use this hostname to reach the site." /><input required placeholder="test.jadadev.com" value={draft.serverName} onChange={(e) => setDraft({ ...draft, serverName: e.target.value })} /></label>
-      <label><FieldHint text="Aliases" tip="Optional extra hostnames that also serve this same folder, separated by commas. Example: www.test.jadadev.com" /><input placeholder="www.test.jadadev.com, api.test.jadadev.com" value={draft.aliases.join(', ')} onChange={(e) => setDraft({ ...draft, aliases: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
-      <div className="check-row"><span className="toggle-with-hint"><Toggle checked={draft.http} onChange={(http) => setDraft({ ...draft, http })} label="HTTP" /><button type="button" className="qmark" title="Serve this site over HTTP (port 80 by default)." aria-label="HTTP help">?</button></span><span className="toggle-with-hint"><Toggle checked={draft.https} onChange={(https) => setDraft({ ...draft, https })} label="HTTPS (self-signed)" /><button type="button" className="qmark" title="Also serve HTTPS with a WeebX self-signed certificate. Browsers will warn until you trust it." aria-label="HTTPS help">?</button></span></div>
-      <span className="toggle-with-hint"><Toggle checked={draft.updateHosts} onChange={(updateHosts) => setDraft({ ...draft, updateHosts })} label="Map domain to 127.0.0.1 in Windows hosts" /><button type="button" className="qmark" title="Adds the domain to this PC's hosts file so it opens locally. On a VPS you should use DNS instead — see Help." aria-label="Hosts mapping help">?</button></span>
-      <p className="hint">The project folder will be created inside <code>{data.settings.htdocsRoot}</code>. Updating hosts requires administrator rights.</p>
-      <div className="modal-actions"><button type="button" onClick={() => setHelp(true)}><CircleHelp size={15} /> Help</button><div className="modal-actions-end"><button type="button" onClick={() => { setShow(false); setHelp(false) }}>Cancel</button><ActionButton className="primary" type="submit" working={creating} icon={<Plus size={16} />} label="Create site" /></div></div>
+  const openProfile = (site: VirtualHost) => {
+    setEditing(site); setEditIsolation(editableIsolation(site, data.settings.activePhpVersion)); setCredential(null); setSiteLog(null); setOptions(null)
+  }
+  const saveProfile = async () => {
+    if (!editing) return
+    setSavingProfile(true)
+    try { if (await run(() => window.weebx.updateVhostProfile(editing.id, editIsolation))) { setEditing(null); setCredential(null) } }
+    finally { setSavingProfile(false) }
+  }
+  const revealCredential = async () => {
+    if (!editing) return
+    const result = await run(() => window.weebx.revealSiteDatabasePassword(editing.id), false)
+    if (result) setCredential(result)
+  }
+  const readSiteLog = async (kind: SiteLogKind) => {
+    if (!editing) return
+    const result = await run(() => window.weebx.readSiteLog(editing.id, kind), false)
+    if (result) setSiteLog(result)
+  }
+  return <><div className="page-toolbar"><div><h2>Virtual hosts</h2><p>Run simple sites or give each project its own PHP, storage, logs, database identity, and security policy.</p></div><ActionButton className="primary" icon={<Plus size={16} />} label="New site" onClick={openCreate} /></div>
+    <div className="site-list">{data.virtualHosts.map((site) => <article key={site.id} className={site.isolation ? 'isolated' : ''}><div className="site-glyph">{site.isolation ? <ShieldCheck size={20} /> : <Globe2 size={20} />}</div><div className="site-main"><div><h3>{site.serverName}</h3><span className={site.enabled ? 'enabled' : 'disabled'}>{site.enabled ? 'Enabled' : 'Disabled'}</span>{site.isolation && <span className="isolation-badge">Isolated</span>}{site.isolation?.database && !site.isolation.database.passwordSet && <span className="credential-repair">Credential setup required</span>}</div><p>{site.documentRoot}</p><div className="tags">{site.http && <span>HTTP</span>}{site.https && <span><LockKeyhole size={11} /> HTTPS</span>}{site.isolation && <span>PHP {site.isolation.phpVersion}</span>}{site.isolation?.database && <span><Database size={11} /> {site.isolation.database.databaseName}</span>}{site.aliases.map((alias) => <span key={alias}>{alias}</span>)}</div></div><div className="row-actions"><ActionButton title="Manage isolated profile" icon={<Wrench size={17} />} onClick={() => openProfile(site)} /><ActionButton title="Open folder" icon={<FolderOpen size={17} />} onClick={async () => (await run(() => window.weebx.openPath(site.documentRoot), false)) !== undefined} /><ActionButton title={site.enabled ? 'Disable' : 'Enable'} icon={<Power size={17} />} onClick={async () => (await run(() => window.weebx.setVhostEnabled(site.id, !site.enabled))) !== undefined} /><ActionButton className="trash" title="Remove (files and database are preserved)" icon={<Trash2 size={17} />} onClick={async () => { if (!confirm(`Remove ${site.serverName}? Project files and its database will be preserved; the managed database login will be removed.`)) return false; return (await run(() => window.weebx.deleteVhost(site.id))) !== undefined }} /></div></article>)}{!data.virtualHosts.length && <div className="big-empty"><ShieldCheck size={30} /><h3>No sites yet</h3><p>Create an isolated project with its own runtime policy and database identity.</p><ActionButton icon={<Plus size={16} />} label="Create your first site" onClick={openCreate} /></div>}</div>
+    {show && <Modal wide title="Create virtual host" onClose={() => { setShow(false); setHelp(false) }}><form className="form site-form" onSubmit={(event) => void submit(event)}><div className="site-basics">
+      <label><FieldHint text="Project name (folder)" tip="Folder WeebX creates inside htdocs." /><input required placeholder="customer-portal" value={draft.name} onChange={(e) => { const name = e.target.value; setDraft((old) => ({ ...old, name, isolation: old.isolation ? { ...old.isolation, database: old.isolation.database ? { ...old.isolation.database, databaseName: `${name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_db`.slice(0, 63), username: `${name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_app`.slice(0, 32) } : undefined } : undefined })) }} /></label>
+      <label><FieldHint text="Server name" tip="The hostname Apache answers for." /><input required placeholder="portal.example.com" value={draft.serverName} onChange={(e) => setDraft({ ...draft, serverName: e.target.value })} /></label>
+      <label><FieldHint text="Aliases" tip="Optional comma-separated hostnames." /><input placeholder="www.portal.example.com" value={draft.aliases.join(', ')} onChange={(e) => setDraft({ ...draft, aliases: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
+      <div className="site-protocols"><Toggle checked={draft.http} onChange={(http) => setDraft({ ...draft, http })} label="HTTP" /><Toggle checked={draft.https} onChange={(https) => setDraft({ ...draft, https })} label="HTTPS (self-signed)" /><Toggle checked={draft.updateHosts} onChange={(updateHosts) => setDraft({ ...draft, updateHosts })} label="Map locally in Windows hosts" /></div>
+    </div><div className="isolation-switch"><div><ShieldCheck size={20} /><span><b>Isolated site profile</b><small>Separate PHP configuration, writable storage, logs, database identity, and permission policy.</small></span></div><Toggle checked={Boolean(draft.isolation)} onChange={(enabled) => setDraft({ ...draft, isolation: enabled ? defaultSiteIsolation(data.settings.activePhpVersion, draft.name) : undefined })} label={draft.isolation ? 'Enabled' : 'Disabled'} /></div>
+      {draft.isolation && <SiteProfileEditor profile={draft.isolation} options={options} versions={data.phpVersions.filter((item) => item.installed).map((item) => item.version)} profileRoot={`${data.settings.runtimeRoot}\\site-profiles\\${draft.name || 'project-name'}`} mariaDbRunning={data.services.some((item) => item.id === 'mariadb' && item.state === 'running')} onVersion={(version) => void loadOptions(version, true)} onChange={(isolation) => setDraft({ ...draft, isolation })} />}
+      <div className="modal-actions"><button type="button" onClick={() => setHelp(true)}><CircleHelp size={15} /> Help</button><div className="modal-actions-end"><button type="button" onClick={() => setShow(false)}>Cancel</button><ActionButton className="primary" type="submit" working={creating} icon={<Plus size={16} />} label="Create site" /></div></div>
     </form></Modal>}
-    {help && <Modal title="How virtual hosts work" onClose={() => setHelp(false)}>
-      <div className="help-copy">
-        <p>A virtual host tells Apache which folder to serve when someone asks for a domain name.</p>
-        <p><b>On this computer:</b> turn on “Map domain to 127.0.0.1 in Windows hosts” so test.jadadev.com opens the local site.</p>
-        <p><b>On a Machine / VPS / Dedicated Server:</b> add DNS for the domain (an A record, and AAAA if you use IPv6) pointing to the IP of this Machine / VPS / Dedicated Server. Until that DNS record exists, the domain will not reach WeebX.</p>
-        <p>The project name is only the folder. The server name is the real hostname you put in DNS or the hosts file.</p>
-      </div>
-      <div className="modal-actions"><button className="primary" type="button" onClick={() => setHelp(false)}>Got it</button></div>
-    </Modal>}
+    {editing && <Modal wide title={`Isolation · ${editing.serverName}`} onClose={() => { setEditing(null); setCredential(null) }}><div className="form site-form"><div className="isolation-switch"><div>{editIsolation ? <ShieldCheck size={20} /> : <CircleAlert size={20} />}<span><b>{editIsolation ? 'Isolated profile enabled' : 'Standard shared profile'}</b><small>{editIsolation ? 'This site has dedicated PHP settings and runtime storage.' : 'This site currently inherits the global PHP runtime.'}</small></span></div><Toggle checked={Boolean(editIsolation)} onChange={(enabled) => setEditIsolation(enabled ? editableIsolation(editing, data.settings.activePhpVersion) : undefined)} label={editIsolation ? 'Enabled' : 'Disabled'} /></div>
+      {editIsolation && <SiteProfileEditor profile={editIsolation} options={options} versions={data.phpVersions.filter((item) => item.installed).map((item) => item.version)} profileRoot={`${data.settings.runtimeRoot}\\site-profiles\\${editing.name}`} mariaDbRunning={data.services.some((item) => item.id === 'mariadb' && item.state === 'running')} onVersion={(version) => void loadOptions(version, true)} onChange={setEditIsolation} credential={credential} onRevealCredential={editing.isolation?.database ? revealCredential : undefined} siteLog={siteLog} onReadLog={readSiteLog} />}
+      <div className="modal-actions">{editing.isolation && <ActionButton icon={<FolderOpen size={14} />} label="Profile storage" onClick={async () => (await run(() => window.weebx.openPath(`${data.settings.runtimeRoot}\\site-profiles\\${editing.name}`), false)) !== undefined} />}<span className="isolation-footnote">Disabling isolation preserves the site files and database but removes its managed database login.</span><div className="modal-actions-end"><button type="button" onClick={() => setEditing(null)}>Cancel</button><ActionButton className="primary" working={savingProfile} icon={<Save size={15} />} label="Save profile" onClick={saveProfile} /></div></div>
+    </div></Modal>}
+    {help && <Modal title="How isolated sites work" onClose={() => setHelp(false)}><div className="help-copy"><p>Each isolated site uses its selected PHP executable with a dedicated <code>php.ini</code>, session folder, temporary directories, upload staging area, and log files.</p><p><b>Filesystem boundary:</b> open_basedir limits PHP file access to the site and profile folders. It is defense in depth, not a replacement for a separate Windows account or virtual machine.</p><p><b>Database identity:</b> WeebX creates a strong-password user limited to this database. The root account is never written into the site.</p><p><b>Live hosting:</b> select Live / Production, keep user-level INI overrides disabled, use HTTPS, and test the application before exposure.</p></div><div className="modal-actions"><button className="primary" type="button" onClick={() => setHelp(false)}>Got it</button></div></Modal>}
   </>
+}
+
+function SiteProfileEditor({ profile, options, versions, profileRoot, mariaDbRunning, onVersion, onChange, credential, onRevealCredential, siteLog, onReadLog }: { profile: SiteIsolationDraft; options: SiteProfileOptions | null; versions: string[]; profileRoot: string; mariaDbRunning: boolean; onVersion: (version: string) => void; onChange: (profile: SiteIsolationDraft) => void; credential?: SiteDatabaseCredential | null; onRevealCredential?: () => void; siteLog?: SiteLogSnapshot | null; onReadLog?: (kind: SiteLogKind) => void }) {
+  const [tab, setTab] = useState<'runtime' | 'limits' | 'database' | 'security' | 'ini' | 'logs'>('runtime')
+  const [extensionSearch, setExtensionSearch] = useState('')
+  const extensions = (options?.extensions ?? profile.phpExtensions).filter((item) => item.includes(extensionSearch.toLowerCase()))
+  const set = <K extends keyof SiteIsolationDraft>(key: K, value: SiteIsolationDraft[K]) => onChange({ ...profile, [key]: value })
+  const toggleExtension = (name: string) => set('phpExtensions', profile.phpExtensions.includes(name) ? profile.phpExtensions.filter((item) => item !== name) : [...profile.phpExtensions, name].sort())
+  const enableDatabase = (enabled: boolean) => set('database', enabled ? { databaseName: 'site_db', username: 'site_app', access: 'read-write', password: browserStrongPassword() } : undefined)
+  const regenerateDatabasePassword = () => profile.database && set('database', { ...profile.database, password: browserStrongPassword() })
+  return <div className="profile-editor"><div className="profile-summary"><div><Code2 size={16} /><span><small>PHP</small><b>{profile.phpVersion} · {profile.phpProfile === 'production' ? 'Live / Production' : 'Development'}</b></span></div><div><HardDrive size={16} /><span><small>Profile storage</small><b title={profileRoot}>{profileRoot}</b></span></div><div><Database size={16} /><span><small>Database identity</small><b>{profile.database ? profile.database.username : 'Not provisioned'}</b></span></div></div>
+    <div className="profile-tabs">{([['runtime', 'PHP runtime'], ['limits', 'Limits & uploads'], ['database', 'Database'], ['security', 'Security'], ['ini', 'Advanced php.ini'], ...(onReadLog ? [['logs', 'Site logs'] as const] : [])] as const).map(([id, label]) => <button type="button" key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); if (id === 'logs' && !siteLog) onReadLog?.('php') }}>{label}</button>)}</div>
+    <div className="profile-pane">
+      {tab === 'runtime' && <><div className="profile-grid"><label>PHP version<select value={profile.phpVersion} onChange={(event) => onVersion(event.target.value)}>{versions.map((version) => <option key={version}>{version}</option>)}</select></label><label>Environment<select value={profile.phpProfile} onChange={(event) => set('phpProfile', event.target.value as SiteIsolationDraft['phpProfile'])}><option value="development">Development</option><option value="production">Live / Production</option></select></label></div><div className="extension-toolbar"><label><span>PHP extensions</span><input placeholder="Search extensions" value={extensionSearch} onChange={(event) => setExtensionSearch(event.target.value)} /></label><span>{profile.phpExtensions.length} enabled</span></div><div className="profile-extensions">{extensions.map((name) => <button type="button" key={name} className={profile.phpExtensions.includes(name) ? 'on' : ''} onClick={() => toggleExtension(name)}><i>{profile.phpExtensions.includes(name) ? <Check size={11} /> : <Plus size={11} />}</i>{name}</button>)}</div></>}
+      {tab === 'limits' && <><div className="profile-grid limits"><label>Memory limit<input value={profile.memoryLimit} onChange={(e) => set('memoryLimit', e.target.value)} /></label><label>Execution time (seconds)<input type="number" min="1" max="3600" value={profile.maxExecutionTime} onChange={(e) => set('maxExecutionTime', Number(e.target.value))} /></label><label>Input time (seconds)<input type="number" min="1" max="3600" value={profile.maxInputTime} onChange={(e) => set('maxInputTime', Number(e.target.value))} /></label><label>Input variables<input type="number" min="100" max="100000" value={profile.maxInputVars} onChange={(e) => set('maxInputVars', Number(e.target.value))} /></label><label>Maximum upload<input value={profile.uploadMaxFilesize} onChange={(e) => set('uploadMaxFilesize', e.target.value)} /></label><label>Maximum POST body<input value={profile.postMaxSize} onChange={(e) => set('postMaxSize', e.target.value)} /></label><label>Files per request<input type="number" min="1" max="200" value={profile.maxFileUploads} onChange={(e) => set('maxFileUploads', Number(e.target.value))} /></label></div><p className="profile-note">Uploads are staged outside the public document root in this profile’s private upload directory.</p></>}
+      {tab === 'database' && <><div className="database-switch"><div><Database size={18} /><span><b>Managed least-privilege database user</b><small>Scoped to one database; never grants global or grant-option privileges.</small></span></div><Toggle checked={Boolean(profile.database)} onChange={enableDatabase} label={profile.database ? 'Enabled' : 'Disabled'} /></div>{profile.database && <div className="profile-grid database-fields"><label>Database name<input value={profile.database.databaseName} onChange={(e) => set('database', { ...profile.database!, databaseName: e.target.value })} /></label><label>Username<input value={profile.database.username} onChange={(e) => set('database', { ...profile.database!, username: e.target.value })} /></label><label>Access<select value={profile.database.access} onChange={(e) => set('database', { ...profile.database!, access: e.target.value as 'read-write' | 'read-only' })}><option value="read-write">Read and write</option><option value="read-only">Read only</option></select></label><div className="database-password"><span>Password</span><div>{credential ? <code>{credential.password}</code> : profile.database.password ? <code>{profile.database.password}</code> : <code>Protected · unchanged</code>}<button type="button" onClick={regenerateDatabasePassword}><RefreshCw size={12} /> Generate new</button>{onRevealCredential && <button type="button" onClick={onRevealCredential}><Eye size={12} /> Reveal saved</button>}</div></div></div>}<p className={`profile-note ${!mariaDbRunning && profile.database ? 'warn' : ''}`}>{mariaDbRunning ? 'MariaDB is ready to provision or update this identity.' : 'Start MariaDB before saving a profile with a managed database user.'}</p></>}
+      {tab === 'security' && <><div className="security-options"><Toggle checked={profile.openBasedir} onChange={(value) => set('openBasedir', value)} label="Restrict PHP filesystem access to this site and its profile storage" /><Toggle checked={profile.disableDangerousFunctions} onChange={(value) => set('disableDangerousFunctions', value)} label="Disable process-execution functions (exec, shell_exec, system, proc_open, popen)" /><Toggle checked={profile.allowUserIni} onChange={(value) => set('allowUserIni', value)} label="Allow application .user.ini overrides (advanced; off is safer)" /></div><label className="permission-select">NTFS permission policy<select value={profile.permissionPreset} onChange={(e) => set('permissionPreset', e.target.value as PermissionPreset)}><option value="private">Private — current Windows account, SYSTEM, administrators</option><option value="writable">Owner writable — inherited Windows permissions</option><option value="windows-default">Windows inherited defaults</option></select></label><p className="profile-note">Apache and PHP still run under the same Windows account. For hostile multi-tenant code, use separate Windows accounts, containers, or virtual machines.</p></>}
+      {tab === 'ini' && <><label className="custom-ini">Additional php.ini directives<textarea spellCheck={false} placeholder={"realpath_cache_size=4096K\nopcache.memory_consumption=192"} value={profile.customIni} onChange={(e) => set('customIni', e.target.value)} /></label><p className="profile-note">One <code>key=value</code> directive per line. Isolation, credentials, extensions, paths, logging, and upload limits remain protected and cannot be overridden here.</p></>}
+      {tab === 'logs' && onReadLog && <><div className="site-log-toolbar"><div><button type="button" className={siteLog?.kind === 'php' ? 'active' : ''} onClick={() => onReadLog('php')}>PHP errors</button><button type="button" className={siteLog?.kind === 'apache-error' ? 'active' : ''} onClick={() => onReadLog('apache-error')}>Apache errors</button><button type="button" className={siteLog?.kind === 'apache-access' ? 'active' : ''} onClick={() => onReadLog('apache-access')}>Access log</button></div><button type="button" onClick={() => onReadLog(siteLog?.kind ?? 'php')}><RefreshCw size={12} /> Refresh</button></div><div className="site-log-path">{siteLog?.path ?? `${profileRoot}\\logs`}{siteLog?.truncated && <span>Showing latest 750 KB</span>}</div><pre className="site-log-view">{siteLog?.content || 'No entries yet.'}</pre></>}
+    </div>
+  </div>
 }
 
 const fallbackPhpReleases: PhpRelease[] = [
@@ -439,7 +517,7 @@ function Logo() { return <div className="logo"><img src={logoUrl} alt="WeebX" />
 function AdminBadge({ elevated }: { elevated: boolean }) { return <div className={`admin-badge ${elevated ? 'on' : ''}`}><ShieldCheck size={15} />{elevated ? 'Admin' : 'Standard'}</div> }
 function PanelTitle({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) { return <div className="panel-title"><div>{icon}<h3>{title}</h3></div>{action}</div> }
 function Empty({ text }: { text: string }) { return <div className="empty">{text}</div> }
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal"><div className="modal-head"><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></div>{children}</div></div> }
+function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal${wide ? ' modal-wide' : ''}`}><div className="modal-head"><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></div>{children}</div></div> }
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) { return <label className="toggle"><button type="button" role="switch" aria-checked={checked} className={checked ? 'on' : ''} onClick={() => onChange(!checked)}><i /></button><span>{label}</span></label> }
 function SecretField({ label, value, onChange, placeholder, action }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; action?: ReactNode }) {
   const [visible, setVisible] = useState(false)

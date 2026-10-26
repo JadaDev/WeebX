@@ -13,7 +13,7 @@ export interface StackProcess {
   commandLine?: string
 }
 
-const TARGET_NAMES = new Set(['httpd.exe', 'mariadbd.exe', 'mysqld.exe', 'php-cgi.exe', 'php.exe', 'weebx.exe'])
+const TARGET_NAMES = new Set(['httpd.exe', 'mariadbd.exe', 'mysqld.exe', 'php-cgi.exe', 'php.exe', 'weebx.exe', 'weebx core.exe'])
 
 function normalize(path: string): string {
   return path.replace(/\//g, '\\').toLowerCase()
@@ -47,7 +47,7 @@ export function shouldStopProcess(processInfo: StackProcess, runtimeRoot?: strin
   const name = processInfo.name.toLowerCase()
   if (!TARGET_NAMES.has(name)) return false
   const path = normalize(processInfo.path)
-  if (name === 'weebx.exe') {
+  if (name === 'weebx.exe' || name === 'weebx core.exe') {
     // Electron renderers, GPU, and utility processes use the same executable.
     // Killing them from an IPC request destroys the uninstall page before the
     // request can complete and leaves a blank native window behind.
@@ -85,7 +85,7 @@ export async function inspectStack(runtimeRoot?: string): Promise<{ apache: bool
   return {
     apache: processes.some((item) => item.name.toLowerCase() === 'httpd.exe'),
     mariadb: processes.some((item) => ['mariadbd.exe', 'mysqld.exe'].includes(item.name.toLowerCase())),
-    weebx: processes.some((item) => item.name.toLowerCase() === 'weebx.exe'),
+    weebx: processes.some((item) => ['weebx.exe', 'weebx core.exe'].includes(item.name.toLowerCase())),
     processes
   }
 }
@@ -177,6 +177,7 @@ export function buildMsiUninstallScript(input: { guid: string; exeName?: string;
     // The active uninstaller has exited. WMI terminates remaining helpers and
     // services without opening cmd.exe or relying on a command pipeline.
     `Call TerminateByName("${vb(exe)}")`,
+    'Call TerminateByName("WeebX Core.exe")', // older dual-exe builds used this name
     'Call TerminateByName("httpd.exe")',
     'Call TerminateByName("mariadbd.exe")',
     'Call TerminateByName("mysqld.exe")',

@@ -1,10 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { access, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import type { DashboardSnapshot, InstallRequest, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, RuntimeSettings, ServiceId, VhostDraft } from '../shared/types'
+import type { DashboardSnapshot, InstallRequest, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, RuntimeSettings, ServiceId, SiteIsolationDraft, SiteLogKind, VhostDraft } from '../shared/types'
 import type { JsonStore } from './store'
 import type { ProcessManager } from './process-manager'
 import type { ConfigManager } from './config-manager'
@@ -22,6 +22,7 @@ import { applyApacheModules, applyPhpExtensions, applyPhpLimits, assertRuntimeTu
 import { inspectStackComponents } from './stack-components'
 import { assertPasswordInput, publicRuntimeSettings } from './security'
 import { applyPermissionPreset } from './permissions'
+import { siteDatabaseCredential, siteProfileOptions, siteProfilePaths } from './site-profile'
 
 const execFileAsync = promisify(execFile)
 
@@ -154,9 +155,60 @@ export function registerIpc(deps: Dependencies): () => void {
     return processes.validate(kind as 'php' | 'apache' | 'mariadb')
   })
   handle('weebx:vhosts', () => vhosts.list())
-  handle('weebx:vhost-create', (_event, draft: VhostDraft) => vhosts.create(draft))
-  handle('weebx:vhost-delete', (_event, id: string) => vhosts.remove(id))
-  handle('weebx:vhost-enable', (_event, id: string, enabled: boolean) => vhosts.setEnabled(id, enabled))
+  handle('weebx:vhost-create', async (_event, draft: VhostDraft) => {
+    if (draft?.isolation?.database && !['running', 'starting'].includes(processes.status('mariadb').state)) throw new Error('Start MariaDB before provisioning an isolated database user.')
+    const site = await vhosts.create(draft)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    return site
+  })
+  handle('weebx:vhost-profile-update', async (_event, id: string, isolation?: SiteIsolationDraft) => {
+    const current = (await vhosts.list()).find((item) => item.id === id)
+    const databaseChange = Boolean(isolation?.database || current?.isolation?.database && !isolation?.database)
+    if (databaseChange && !['running', 'starting'].includes(processes.status('mariadb').state)) throw new Error('Start MariaDB before provisioning, changing, or removing an isolated database user.')
+    const site = await vhosts.updateProfile(id, isolation)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    return site
+  })
+  handle('weebx:vhost-delete', async (_event, id: string) => {
+    const site = (await vhosts.list()).find((item) => item.id === id)
+    if (site?.isolation?.database && !['running', 'starting'].includes(processes.status('mariadb').state)) throw new Error('Start MariaDB so WeebX can safely remove the managed database user. The database itself will be preserved.')
+    await vhosts.remove(id)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+  })
+  handle('weebx:vhost-enable', async (_event, id: string, enabled: boolean) => {
+    const site = await vhosts.setEnabled(id, enabled)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    return site
+  })
+  handle('weebx:site-profile-options', async (_event, version: unknown) => {
+    if (typeof version !== 'string') throw new Error('Choose an installed PHP version.')
+    return siteProfileOptions(await store.getSettings(), version)
+  })
+  handle('weebx:site-database-reveal', async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Virtual host not found.')
+    const site = (await vhosts.list()).find((item) => item.id === id)
+    if (!site?.isolation?.database) throw new Error('This site does not have a managed database user.')
+    const result = await dialog.showMessageBox(window, {
+      type: 'warning', title: 'Reveal site database password',
+      message: `Show the database password for ${site.serverName}?`,
+      detail: 'Only continue in private. The credential will be decrypted for this screen and hidden automatically after 30 seconds.',
+      buttons: ['Cancel', 'Reveal password'], defaultId: 0, cancelId: 0, noLink: true
+    })
+    if (result.response !== 1) return null
+    const password = await store.getSiteDatabasePassword(site.id)
+    if (!password) throw new Error('The saved database credential is missing. Save the site profile to generate a replacement.')
+    return siteDatabaseCredential(await store.getSettings(), site, password)
+  })
+  handle('weebx:site-log-read', async (_event, id: unknown, kind: unknown) => {
+    if (typeof id !== 'string' || !['php', 'apache-error', 'apache-access'].includes(String(kind))) throw new Error('Invalid isolated-site log request.')
+    const site = (await vhosts.list()).find((item) => item.id === id)
+    if (!site?.isolation) throw new Error('This site does not have an isolated profile.')
+    const paths = siteProfilePaths(await store.getSettings(), site)
+    const file = join(paths.logs, kind === 'php' ? 'php-error.log' : kind === 'apache-error' ? 'apache-error.log' : 'apache-access.log')
+    const raw = await readFile(file, 'utf8').catch(() => '')
+    const limit = 750_000
+    return { kind: kind as SiteLogKind, path: file, content: raw.length > limit ? raw.slice(-limit) : raw, truncated: raw.length > limit }
+  })
   handle('weebx:php-select', async (_event, version: string) => {
     await installer.selectPhp(version)
     const apache = processes.status('apache')

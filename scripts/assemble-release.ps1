@@ -4,9 +4,16 @@ $release = Join-Path $repo 'release\WeebX'
 $website = Join-Path $release 'Website'
 $portable = Join-Path $release 'WeebX'
 $unpacked = Join-Path $repo 'dist\win-unpacked'
-$msi = Get-ChildItem -LiteralPath (Join-Path $repo 'dist') -Filter 'WeebX-*-x64.msi' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $msi) { throw 'The WeebX MSI was not produced.' }
-if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'WeebX.exe'))) { throw 'The portable WeebX build was not produced.' }
+$package = Get-Content -LiteralPath (Join-Path $repo 'package.json') -Raw | ConvertFrom-Json
+$version = [string]$package.version
+$msiPath = Join-Path $repo "dist\WeebX-$version-x64.msi"
+if (-not (Test-Path -LiteralPath $msiPath)) { throw "The WeebX $version MSI was not produced: $msiPath" }
+$msi = Get-Item -LiteralPath $msiPath
+$portableExe = Join-Path $unpacked 'WeebX.exe'
+if (-not (Test-Path -LiteralPath $portableExe)) { throw 'The portable WeebX build was not produced.' }
+if (Test-Path -LiteralPath (Join-Path $unpacked 'WeebX Core.exe')) { throw 'The portable build still contains WeebX Core.exe. Keep a single WeebX.exe.' }
+$exe = Get-Item -LiteralPath $portableExe
+if ($exe.Length -lt 10MB) { throw 'WeebX.exe is too small to be the Electron application.' }
 $releaseFull = [IO.Path]::GetFullPath($release)
 if (-not $releaseFull.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe release path.' }
 function Remove-TreeWithRetry {
@@ -65,7 +72,20 @@ $filesDir = Join-Path $website 'WeebX\Files'
 New-Item -ItemType Directory -Path $filesDir -Force | Out-Null
 Copy-FileIfChanged -Source $msi.FullName -Destination (Join-Path $filesDir 'WeebX-Installer-x64.msi')
 Copy-FileIfChanged -Source $msi.FullName -Destination (Join-Path $release 'WeebX-Installer-x64.msi')
+$zip = Join-Path $release 'WeebX.zip'
+if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+Push-Location $releaseFull
+try {
+  & tar.exe -a -cf 'WeebX.zip' 'WeebX'
+  if ($LASTEXITCODE -ne 0) { throw "Creating WeebX.zip failed with exit code $LASTEXITCODE." }
+} finally {
+  Pop-Location
+}
+Copy-FileIfChanged -Source $zip -Destination (Join-Path $filesDir 'WeebX.zip')
 Copy-FileIfChanged -Source (Join-Path $repo 'README.md') -Destination (Join-Path $release 'README.md')
 Copy-FileIfChanged -Source (Join-Path $repo 'resources\setup_weebx.bat') -Destination (Join-Path $release 'setup_weebx.bat')
 Copy-FileIfChanged -Source (Join-Path $repo 'resources\uninstall_weebx.bat') -Destination (Join-Path $release 'Uninstall WeebX.bat')
-Write-Host "Release assembled at $release" -ForegroundColor Green
+Write-Host "Release $version assembled at $release" -ForegroundColor Green
+Write-Host "Installer: $(Join-Path $release 'WeebX-Installer-x64.msi')" -ForegroundColor Green
+Write-Host "Portable folder: $portable" -ForegroundColor Green
+Write-Host "Portable zip: $zip" -ForegroundColor Green

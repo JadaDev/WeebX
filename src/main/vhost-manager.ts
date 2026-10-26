@@ -2,11 +2,12 @@ import { access, appendFile, mkdir, readFile, writeFile } from 'node:fs/promises
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { VhostDraft, VirtualHost } from '../shared/types'
+import type { RuntimeSettings, SiteIsolationDraft, VhostDraft, VirtualHost } from '../shared/types'
 import type { JsonStore } from './store'
 import type { ConfigManager } from './config-manager'
 import type { LogBuffer } from './logs'
 import { runtimePaths } from './paths'
+import { dropSiteDatabaseUser, normalizeSiteIsolation, provisionSiteDatabase, siteProfilePaths, writeSitePhpIni } from './site-profile'
 
 const execFileAsync = promisify(execFile)
 const BEGIN = '# BEGIN WEEBX MANAGED VHOSTS'
@@ -19,7 +20,19 @@ function validHostname(value: string): boolean {
 function cleanName(value: string): string {
   const clean = value.toLowerCase().trim().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
   if (!clean) throw new Error('Project name must contain letters or numbers.')
+  if (clean.length > 64) throw new Error('Project name must be 64 characters or fewer.')
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) throw new Error('Choose a different project name; that name is reserved by Windows.')
   return clean
+}
+
+function assertStoredVhost(vhost: VirtualHost, settings: RuntimeSettings): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(vhost.id)) throw new Error('A saved virtual host has an invalid identifier.')
+  cleanName(vhost.name)
+  if (cleanName(vhost.name) !== vhost.name) throw new Error('A saved virtual host has an invalid project name.')
+  if (!validHostname(vhost.serverName) || vhost.aliases.some((item) => !validHostname(item))) throw new Error('A saved virtual host contains an invalid hostname.')
+  const documentRoot = resolve(vhost.documentRoot)
+  const documentRelative = relative(resolve(settings.htdocsRoot), documentRoot)
+  if (documentRelative.startsWith('..') || isAbsolute(documentRelative)) throw new Error('A saved virtual host points outside htdocs.')
 }
 
 export class VhostManager {
@@ -39,7 +52,9 @@ export class VhostManager {
     if (!validHostname(serverName) || aliases.some((item) => !validHostname(item))) throw new Error('Enter valid hostnames without a protocol or path.')
     if (!draft.http && !draft.https) throw new Error('Enable HTTP, HTTPS, or both.')
     const existing = await this.store.getVhosts()
-    if (existing.some((item) => item.serverName === serverName)) throw new Error(`${serverName} already exists.`)
+    if (existing.some((item) => item.name === name)) throw new Error('That project name is already used by another site.')
+    const requestedHosts = new Set([serverName, ...aliases])
+    if (existing.some((item) => [item.serverName, ...item.aliases].some((host) => requestedHosts.has(host)))) throw new Error('That server name or alias is already assigned to another site.')
     const documentRoot = resolve(draft.documentRoot || join(settings.htdocsRoot, name))
     const documentRelative = relative(resolve(settings.htdocsRoot), documentRoot)
     if (documentRelative.startsWith('..') || isAbsolute(documentRelative)) {
@@ -50,11 +65,28 @@ export class VhostManager {
     try { await access(indexFile) } catch {
       await writeFile(indexFile, `<?php declare(strict_types=1); ?><h1>${serverName}</h1><p>Served by WeebX · PHP <?= PHP_VERSION ?></p>`, 'utf8')
     }
+    const id = crypto.randomUUID()
+    const normalized = draft.isolation ? await normalizeSiteIsolation(settings, draft.isolation) : undefined
+    if (normalized?.profile.database && existing.some((item) => item.isolation?.database && (item.isolation.database.username === normalized.profile.database!.username || item.isolation.database.databaseName === normalized.profile.database!.databaseName))) {
+      throw new Error('Each isolated site must use a unique database name and database username.')
+    }
     const vhost: VirtualHost = {
-      id: crypto.randomUUID(), name, serverName, aliases, documentRoot,
+      id, name, serverName, aliases, documentRoot,
       http: draft.http, https: draft.https, enabled: true, createdAt: new Date().toISOString()
     }
+    if (normalized) vhost.isolation = normalized.profile
     if (vhost.https) await this.ensureCertificate(vhost)
+    if (vhost.isolation) {
+      await writeSitePhpIni(settings, vhost)
+      if (vhost.isolation.database && normalized?.databasePassword) {
+        await provisionSiteDatabase(settings, vhost.isolation, normalized.databasePassword, false)
+        try { await this.store.setSiteDatabasePassword(id, normalized.databasePassword) }
+        catch (error) {
+          await dropSiteDatabaseUser(settings, vhost.isolation).catch(() => undefined)
+          throw error
+        }
+      }
+    }
     await this.store.setVhosts([...existing, vhost])
     await this.render()
     if (draft.updateHosts) await this.addHosts([serverName, ...aliases])
@@ -66,9 +98,60 @@ export class VhostManager {
     const all = await this.store.getVhosts()
     const target = all.find((item) => item.id === id)
     if (!target) return
+    if (target.isolation?.database) await dropSiteDatabaseUser(await this.store.getSettings(), target.isolation)
     await this.store.setVhosts(all.filter((item) => item.id !== id))
+    await this.store.deleteSiteDatabasePassword(id)
     await this.render()
     this.logs.add('system', 'info', `Removed virtual host ${target.serverName}; its document root was preserved.`)
+  }
+
+  async updateProfile(id: string, draft?: SiteIsolationDraft): Promise<VirtualHost> {
+    const settings = await this.store.getSettings()
+    const all = await this.store.getVhosts()
+    const target = all.find((item) => item.id === id)
+    if (!target) throw new Error('Virtual host not found.')
+    const previous = target.isolation
+    if (!draft) {
+      if (previous?.database) await dropSiteDatabaseUser(settings, previous)
+      delete target.isolation
+      await this.store.deleteSiteDatabasePassword(id)
+    } else {
+      const existingPassword = await this.store.getSiteDatabasePassword(id)
+      const sameDatabaseIdentity = Boolean(existingPassword && previous?.database && draft.database && previous.database.databaseName === draft.database.databaseName && previous.database.username === draft.database.username)
+      const normalized = await normalizeSiteIsolation(settings, {
+        ...draft,
+        database: draft.database ? { ...draft.database, password: draft.database.password || (sameDatabaseIdentity ? existingPassword : undefined) } : undefined
+      })
+      if (normalized.profile.database && all.some((item) => item.id !== id && item.isolation?.database && (item.isolation.database.username === normalized.profile.database!.username || item.isolation.database.databaseName === normalized.profile.database!.databaseName))) {
+        throw new Error('Each isolated site must use a unique database name and database username.')
+      }
+      await writeSitePhpIni(settings, { ...target, isolation: normalized.profile })
+      if (normalized.profile.database && normalized.databasePassword) {
+        await provisionSiteDatabase(settings, normalized.profile, normalized.databasePassword, Boolean(previous?.database && previous.database.username === normalized.profile.database.username))
+        const identityChanged = Boolean(previous?.database && previous.database.username !== normalized.profile.database.username)
+        if (identityChanged && previous) {
+          try { await dropSiteDatabaseUser(settings, previous) }
+          catch (error) {
+            await dropSiteDatabaseUser(settings, normalized.profile).catch(() => undefined)
+            throw error
+          }
+        }
+        try { await this.store.setSiteDatabasePassword(id, normalized.databasePassword) }
+        catch (error) {
+          if (sameDatabaseIdentity && existingPassword) await provisionSiteDatabase(settings, normalized.profile, existingPassword).catch(() => undefined)
+          else await dropSiteDatabaseUser(settings, normalized.profile).catch(() => undefined)
+          throw error
+        }
+      } else {
+        if (previous?.database) await dropSiteDatabaseUser(settings, previous)
+        await this.store.deleteSiteDatabasePassword(id)
+      }
+      target.isolation = normalized.profile
+    }
+    await this.store.setVhosts(all)
+    await this.render()
+    this.logs.add('system', 'info', `${target.serverName} isolated profile ${target.isolation ? 'updated' : 'disabled'}.`)
+    return target
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<VirtualHost> {
@@ -90,13 +173,16 @@ export class VhostManager {
     const userContent = start >= 0 && finish > start
       ? `${current.slice(0, start).trimEnd()}\n${current.slice(finish + END.length).trimStart()}`.trim()
       : current.trim()
-    const blocks = all.filter((item) => item.enabled).map((item) => this.block(item, settings.runtimeRoot, settings.apachePort, settings.apacheSslPort)).join('\n\n')
+    for (const item of all.filter((site) => site.isolation)) await writeSitePhpIni(settings, item, false)
+    const blocks = all.filter((item) => item.enabled).map((item) => this.block(item, settings)).join('\n\n')
     const next = `${userContent}${userContent ? '\n\n' : ''}${BEGIN}\n${blocks}\n${END}\n`
     await this.configs.save('vhosts', next)
   }
 
-  private block(vhost: VirtualHost, runtimeRoot: string, httpPort: number, httpsPort: number): string {
+  private block(vhost: VirtualHost, settings: RuntimeSettings): string {
+    assertStoredVhost(vhost, settings)
     const lines: string[] = [`# ${vhost.name}`]
+    const profile = vhost.isolation ? this.profileDirectives(vhost, settings) : []
     const common = [
       `    ServerName ${vhost.serverName}`,
       ...(vhost.aliases.length ? [`    ServerAlias ${vhost.aliases.join(' ')}`] : []),
@@ -105,14 +191,39 @@ export class VhostManager {
       '        Options -Indexes +FollowSymLinks',
       '        AllowOverride All',
       '        Require all granted',
-      '    </Directory>'
+      ...(vhost.isolation ? ['        AddHandler application/x-httpd-php .php'] : []),
+      '    </Directory>',
+      ...profile
     ]
-    if (vhost.http) lines.push(`<VirtualHost *:${httpPort}>`, ...common, '</VirtualHost>')
+    if (vhost.http) lines.push(`<VirtualHost *:${settings.apachePort}>`, ...common, '</VirtualHost>')
     if (vhost.https) {
-      const cert = this.certPaths(vhost, runtimeRoot)
-      lines.push(`<VirtualHost *:${httpsPort}>`, ...common, '    SSLEngine on', `    SSLCertificateFile "${cert.crt.replace(/\\/g, '/')}"`, `    SSLCertificateKeyFile "${cert.key.replace(/\\/g, '/')}"`, '</VirtualHost>')
+      const cert = this.certPaths(vhost, settings.runtimeRoot)
+      lines.push(`<VirtualHost *:${settings.apacheSslPort}>`, ...common, '    SSLEngine on', `    SSLCertificateFile "${cert.crt.replace(/\\/g, '/')}"`, `    SSLCertificateKeyFile "${cert.key.replace(/\\/g, '/')}"`, '</VirtualHost>')
     }
     return lines.join('\n')
+  }
+
+  private profileDirectives(vhost: VirtualHost, settings: RuntimeSettings): string[] {
+    if (!vhost.isolation) return []
+    const profilePaths = siteProfilePaths(settings, vhost)
+    const phpRoot = join(settings.runtimeRoot, 'php', vhost.isolation.phpVersion).replace(/\\/g, '/')
+    const handler = 'application/x-httpd-php'
+    const cgiUrl = `/weebx-site-${vhost.id.replace(/-/g, '')}/`
+    return [
+      `    ErrorLog "${join(profilePaths.logs, 'apache-error.log').replace(/\\/g, '/')}"`,
+      `    CustomLog "${join(profilePaths.logs, 'apache-access.log').replace(/\\/g, '/')}" combined`,
+      `    ScriptAlias ${cgiUrl} "${phpRoot}/"`,
+      `    <Directory "${phpRoot}">`,
+      '        Options None',
+      '        AllowOverride None',
+      '        Require all denied',
+      '        <Files "php-cgi.exe">',
+      '            Require all granted',
+      '        </Files>',
+      '    </Directory>',
+      `    SetEnv PHPRC "${profilePaths.php.replace(/\\/g, '/')}"`,
+      `    Action ${handler} "${cgiUrl}php-cgi.exe"`
+    ]
   }
 
   private async ensureCertificate(vhost: VirtualHost): Promise<void> {

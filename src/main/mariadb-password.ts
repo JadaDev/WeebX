@@ -74,7 +74,7 @@ export async function runMariaDbClient(
   password = settings.mariadbPassword,
   clientPath = join(settings.runtimeRoot, 'mariadb', 'bin', 'mariadb.exe'),
   timeout = 12000
-): Promise<void> {
+): Promise<string> {
   const authDirectory = join(settings.runtimeRoot, 'tmp', 'client-auth')
   await mkdir(authDirectory, { recursive: true, mode: 0o700 })
   const authFile = join(authDirectory, `${crypto.randomUUID()}.ini`)
@@ -84,7 +84,7 @@ export async function runMariaDbClient(
     const executeIndex = extra.indexOf('-e')
     const stdin = executeIndex >= 0 ? String(extra[executeIndex + 1] ?? '') : ''
     const safeExtra = executeIndex >= 0 ? extra.filter((_value, index) => index !== executeIndex && index !== executeIndex + 1) : extra
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<string>((resolve, reject) => {
       const child = spawn(clientPath, [`--defaults-extra-file=${authFile}`, ...clientArgs(settings, safeExtra, host)], { windowsHide: true, stdio: 'pipe' })
       let output = ''
       const timer = setTimeout(() => {
@@ -96,7 +96,7 @@ export async function runMariaDbClient(
       child.once('error', (error) => { clearTimeout(timer); reject(error) })
       child.once('close', (code) => {
         clearTimeout(timer)
-        code === 0 ? resolve() : reject(new Error(output.trim() || `MariaDB client exited with code ${code}.`))
+        code === 0 ? resolve(output.trim()) : reject(new Error(output.trim() || `MariaDB client exited with code ${code}.`))
       })
       if (stdin) child.stdin.end(`${stdin}\n`)
       else child.stdin.end()

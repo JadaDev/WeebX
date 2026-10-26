@@ -32,6 +32,64 @@ export interface VirtualHost {
   https: boolean
   enabled: boolean
   createdAt: string
+  isolation?: SiteIsolationProfile
+}
+
+export type SiteDatabaseAccess = 'read-write' | 'read-only'
+
+export interface SiteDatabaseProfile {
+  databaseName: string
+  username: string
+  access: SiteDatabaseAccess
+  passwordSet: boolean
+}
+
+export interface SiteIsolationProfile {
+  phpVersion: string
+  phpProfile: PhpProfile
+  phpExtensions: string[]
+  memoryLimit: string
+  maxExecutionTime: number
+  maxInputTime: number
+  maxInputVars: number
+  uploadMaxFilesize: string
+  postMaxSize: string
+  maxFileUploads: number
+  openBasedir: boolean
+  disableDangerousFunctions: boolean
+  allowUserIni: boolean
+  permissionPreset: PermissionPreset
+  customIni: string
+  database?: SiteDatabaseProfile
+}
+
+export interface SiteIsolationDraft extends Omit<SiteIsolationProfile, 'database'> {
+  database?: Omit<SiteDatabaseProfile, 'passwordSet'> & { password?: string }
+}
+
+export interface SiteProfileOptions {
+  phpVersion: string
+  extensions: string[]
+  recommendedExtensions: string[]
+}
+
+export interface SiteDatabaseCredential {
+  siteId: string
+  host: '127.0.0.1'
+  port: number
+  databaseName: string
+  username: string
+  password: string
+  access: SiteDatabaseAccess
+}
+
+export type SiteLogKind = 'php' | 'apache-error' | 'apache-access'
+
+export interface SiteLogSnapshot {
+  kind: SiteLogKind
+  path: string
+  content: string
+  truncated: boolean
 }
 
 export interface PhpVersion {
@@ -190,6 +248,7 @@ export interface VhostDraft {
   http: boolean
   https: boolean
   updateHosts: boolean
+  isolation?: SiteIsolationDraft
 }
 
 export interface RuntimeModule {
@@ -240,8 +299,12 @@ export interface WeebXApi {
   validateConfig(kind: 'php' | 'apache' | 'mariadb'): Promise<{ ok: boolean; output: string }>
   listVhosts(): Promise<VirtualHost[]>
   createVhost(draft: VhostDraft): Promise<VirtualHost>
+  updateVhostProfile(id: string, isolation?: SiteIsolationDraft): Promise<VirtualHost>
   deleteVhost(id: string): Promise<void>
   setVhostEnabled(id: string, enabled: boolean): Promise<VirtualHost>
+  siteProfileOptions(version: string): Promise<SiteProfileOptions>
+  revealSiteDatabasePassword(id: string): Promise<SiteDatabaseCredential | null>
+  readSiteLog(id: string, kind: SiteLogKind): Promise<SiteLogSnapshot>
   selectPhp(version: string): Promise<void>
   setPhpProfile(profile: PhpProfile): Promise<void>
   discoverPhpReleases(): Promise<PhpRelease[]>

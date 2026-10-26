@@ -182,7 +182,14 @@ export async function packPortal(
     htdocsRoot: join(dataRoot, 'runtime', 'htdocs'),
     setupComplete: false
   }
-  await fs.writeFile(join(dataRoot, 'weebx.json'), JSON.stringify({ settings: portableSettings, virtualHosts }, null, 2), 'utf8')
+  const portableVirtualHosts = virtualHosts.map((site) => ({
+    ...site,
+    isolation: site.isolation ? {
+      ...site.isolation,
+      database: site.isolation.database ? { ...site.isolation.database, passwordSet: false } : undefined
+    } : undefined
+  }))
+  await fs.writeFile(join(dataRoot, 'weebx.json'), JSON.stringify({ settings: portableSettings, virtualHosts: portableVirtualHosts }, null, 2), 'utf8')
   const manifest: PortalManifest = {
     kind: 'weebx-portal',
     version: WEEBX_VERSION,

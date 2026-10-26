@@ -45,10 +45,8 @@ export async function applyPrivateTreePermissions(path: string): Promise<void> {
   await resetDescendants(path)
 }
 
-export async function applyPermissionPreset(settings: RuntimeSettings, target: PermissionTarget, preset: PermissionPreset): Promise<PermissionResult> {
-  const path = targetPath(settings, target)
-  await access(path).catch(() => { throw new Error(`The ${target} folder does not exist yet.`) })
-
+export async function applyPathPermissionPreset(path: string, preset: PermissionPreset): Promise<void> {
+  await access(path).catch(() => { throw new Error('The selected folder does not exist yet.') })
   if (preset === 'private') {
     await applyPrivateTreePermissions(path)
   } else if (preset === 'writable') {
@@ -59,6 +57,13 @@ export async function applyPermissionPreset(settings: RuntimeSettings, target: P
     await icacls(path, ['/inheritancelevel:e', '/reset', '/Q'])
     await resetDescendants(path)
   }
+}
+
+export async function applyPermissionPreset(settings: RuntimeSettings, target: PermissionTarget, preset: PermissionPreset): Promise<PermissionResult> {
+  const path = targetPath(settings, target)
+  await access(path).catch(() => { throw new Error(`The ${target} folder does not exist yet.`) })
+
+  await applyPathPermissionPreset(path, preset)
 
   const label = preset === 'private' ? 'Private owner-only' : preset === 'writable' ? 'Owner writable' : 'Windows inherited defaults'
   return { target, path, preset, message: `${label} permissions applied to ${path}.` }

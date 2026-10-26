@@ -1,10 +1,23 @@
-# WeebX 2.0.5
+# WeebX 2.1.1
+
+Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
+
+## Screenshot
+
+![WeebX screenshot](docs/screenshot.png)
+
+## Video
+
+### WeebX Walkthrough
+
+Watch WeebX in action! See how to manage Apache, MariaDB (MySQL), PHP, virtual hosts, and more.
+
+https://github.com/user-attachments/assets/a8205b58-199b-413c-bf54-ad81d04361f0
 
 WeebX is a **Local Web Hosting Stack Manager for Windows**. It brings Apache, multiple PHP runtimes, MariaDB, phpMyAdmin, virtual hosts, configuration, permissions, logs, portability, and service recovery into one desktop control panel.
 
 WeebX is designed for both local development and real website hosting. Development is the default environment; a hardened **Live / Production** profile is always one click away.
 
-Website: [weebx.jadadev.com](https://weebx.jadadev.com/)  
 License: MIT
 
 ## Included stack
@@ -126,6 +139,26 @@ For a manual import, download the x64 **Non Thread Safe (NTS)** ZIP from the off
 
 Self-signed certificates are for local testing. Public websites require a certificate trusted by browsers.
 
+### Isolated site profiles
+
+Every virtual host can use a dedicated profile instead of inheriting the global PHP runtime. The profile editor provides both safe defaults and full advanced controls:
+
+- Select an installed PHP version and a Development or Live / Production policy per site.
+- Enable only the PHP extension DLLs that actually exist in that selected runtime.
+- Generate a dedicated `php.ini` with independent memory, execution, input, upload, POST, and file-count limits.
+- Keep sessions, temporary files, upload staging, PHP errors, Apache errors, and Apache access logs in that site's private profile folder outside the public document root.
+- Apply `open_basedir`, optionally disable PHP process-execution functions, and keep `.user.ini` overrides disabled unless explicitly enabled.
+- Apply a Private, Owner writable, or Windows inherited NTFS permission policy to both the project and its profile storage.
+- Provision a unique, strong-password MariaDB user with read/write or read-only access to exactly one database. The application never receives the MariaDB root credential.
+- Reveal the site credential only after a local confirmation; WeebX decrypts it through Windows protection and hides it after 30 seconds or when the app loses focus.
+- Read each site's PHP, Apache error, and Apache access logs directly in the profile editor.
+
+New sites start with isolation enabled. WeebX rejects duplicate project/profile names, prevents a document root from escaping `htdocs`, validates persisted host and database identifiers before generating configuration, and will not overwrite a pre-existing unrelated MariaDB account. Disabling or deleting a profile removes only its WeebX-managed database login; project files and the database itself are preserved.
+
+Profiles are stored under `C:\WeebX\site-profiles\<project>` by default. Portal exports retain profile settings but deliberately omit all credentials, so the destination must generate a replacement site password.
+
+This is strong process-level defense in depth, not hostile multi-tenant operating-system isolation: Apache and PHP processes still run under the same Windows account. Untrusted customers or mutually hostile applications require separate Windows service accounts, containers, virtual machines, or separate hosts.
+
 ### Windows file permissions
 
 Settings provides guided NTFS presets for `htdocs`, MariaDB data, or the complete runtime:
@@ -155,11 +188,12 @@ NTFS permissions protect files from other Windows accounts; they do not sandbox 
 - Repair paths after moving an installation.
 - Preserve websites during uninstall by copying them to `Documents\WeebX Sites`.
 - Preserve websites and MariaDB data during normal component updates.
-- Never export the saved MariaDB credential in a Portal; the destination returns to first-run setup.
+- Never export root or per-site MariaDB credentials in a Portal; the destination returns to security setup and generates replacement site credentials.
 
 ## Security defaults
 
 - The Electron renderer uses sandboxing, context isolation, no Node.js integration, a restrictive Content Security Policy, denied permission requests, and a narrow IPC bridge.
+- A crashed renderer is reloaded with backoff without disabling Chromium's sandbox. The unused Chromium crash-reporting helper is disabled to reduce first-run native process activity.
 - Component downloads use HTTPS allowlists, validate redirects, enforce size limits, and require SHA-256 checksums.
 - Apache denies filesystem access by default, disables directory indexes and TRACE, blocks dotfiles and common secret/config/backup extensions, limits request timeouts, and reduces version disclosure.
 - MariaDB and phpMyAdmin remain loopback-only by default.
@@ -175,7 +209,7 @@ These controls provide a hardened platform baseline; they cannot make arbitrary 
 ## Before hosting a public website
 
 1. Switch PHP to **Live / Production**.
-2. Resolve every password warning and create a separate least-privilege MariaDB user for each site. Do not use `root` in application code.
+2. Resolve every password warning and enable a managed least-privilege database identity for each isolated site. Do not use `root` in application code.
 3. Install a trusted TLS certificate and redirect public HTTP traffic to HTTPS.
 4. Allow only required inbound ports in Windows Firewall and the provider firewall. Never expose MariaDB port 3306 publicly.
 5. Keep phpMyAdmin local-only; use the server console, a VPN, or an SSH tunnel for administration.
@@ -200,12 +234,14 @@ Prepare the offline stack and build the installer:
 
 ```powershell
 npm run prepare:runtime
-npm run dist:msi
+$env:CSC_LINK = 'C:\secure\path\weebx-signing-certificate.pfx'
+$env:CSC_KEY_PASSWORD = '<provided securely outside the repository>'
+npm run dist
 ```
 
-Release artifacts are assembled in `release\WeebX`. Third-party packages come from the official PHP for Windows, Apache Lounge, MariaDB, and phpMyAdmin distribution channels and are verified with pinned SHA-256 hashes.
+`npm run dist` is the production release path. It requires a trusted Windows code-signing certificate, signs WeebX.exe and the MSI, then rejects the release unless every signature is valid and uses the same certificate. Release artifacts are assembled in `release\WeebX` only after these checks. Third-party packages come from the official PHP for Windows, Apache Lounge, MariaDB, and phpMyAdmin distribution channels and are verified with pinned SHA-256 hashes.
 
-The locally assembled 2.0.5 executable and MSI are not Authenticode-signed. Before distributing WeebX as a trusted public download, configure a Windows code-signing certificate in the release pipeline, sign the application and installer, timestamp the signatures, and verify them on a clean Windows machine.
+For isolated local development only, `npm run dist:unsigned` creates an unsigned test package. Never upload or distribute that output. Existing unsigned 2.1.1 artifacts must be replaced by a signed production rebuild before public use; source-level retry logic cannot establish publisher trust for an unsigned executable.
 
 The public website is in `website\WeebX`. Release files belong in `website\WeebX\Files`; direct access to that directory is denied and downloads pass through the validated endpoint.
 
