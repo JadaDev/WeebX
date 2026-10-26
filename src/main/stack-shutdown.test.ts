@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildMsiUninstallScript, clearResetStateBeforeUninstall, isInsideDirectory, shouldStopProcess, uninstallHelperArgs } from './stack-shutdown'
+import { buildMsiUninstallScript, clearResetStateBeforeUninstall, isDefaultUserDataForRemoval, isInsideDirectory, isManagedRuntimeForRemoval, shouldStopProcess, uninstallHelperArgs } from './stack-shutdown'
 
 describe('stack shutdown matching', () => {
   it('stops WeebX Apache and MariaDB processes but not the current app', () => {
@@ -19,6 +19,15 @@ describe('stack shutdown matching', () => {
 })
 
 describe('uninstall reset cleanup', () => {
+  it('recognizes only user-data and the exact default runtime as managed', () => {
+    expect(isManagedRuntimeForRemoval('C:\\Users\\Me\\AppData\\Roaming\\weebx', 'C:\\WeebX', 'C:')).toBe(true)
+    expect(isManagedRuntimeForRemoval('C:\\Users\\Me\\AppData\\Roaming\\weebx', 'C:\\Sites', 'C:')).toBe(false)
+  })
+
+  it('removes only the normal Electron user-data folder, never Portal data', () => {
+    expect(isDefaultUserDataForRemoval('C:\\Users\\Ada\\AppData\\Roaming', 'C:\\Users\\Ada\\AppData\\Roaming\\WeebX')).toBe(true)
+    expect(isDefaultUserDataForRemoval('C:\\Users\\Ada\\AppData\\Roaming', 'D:\\Portable\\WeebX\\data')).toBe(false)
+  })
   it('removes the owned runtime and saved settings', async () => {
     const userData = await mkdtemp(join(tmpdir(), 'weebx-uninstall-'))
     const runtime = join(userData, 'runtime')

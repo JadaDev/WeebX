@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { InstallProgress, InstallRequest, LogEntry, PhpProfile, PortalOptions, PortalProgress, PreparationProgress, RuntimeSettings, RuntimeTuneSave, ServiceId, ServiceStatus, VhostDraft, VirtualHost, WeebXApi } from '../shared/types'
+import type { InstallProgress, InstallRequest, LogEntry, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, PreparationProgress, RuntimeSettings, RuntimeTuneSave, ServiceId, ServiceStatus, VhostDraft, VirtualHost, WeebXApi } from '../shared/types'
 
 const uninstallListeners = new Set<() => void>()
 let uninstallRequested = process.argv.some((argument) => argument.includes('weebx-uninstall'))
@@ -45,14 +45,19 @@ const api: WeebXApi = {
   setVhostEnabled: (id: string, enabled: boolean): Promise<VirtualHost> => ipcRenderer.invoke('weebx:vhost-enable', id, enabled),
   selectPhp: (version: string) => ipcRenderer.invoke('weebx:php-select', version),
   setPhpProfile: (profile: PhpProfile) => ipcRenderer.invoke('weebx:php-profile', profile),
+  discoverPhpReleases: () => ipcRenderer.invoke('weebx:php-releases'),
+  importPhpArchive: () => ipcRenderer.invoke('weebx:php-import'),
   install: (request: InstallRequest) => ipcRenderer.invoke('weebx:install', request),
   updateSettings: (patch: Partial<RuntimeSettings>) => ipcRenderer.invoke('weebx:settings-update', patch),
-  updateMysqlPort: (port: number) => ipcRenderer.invoke('weebx:mysql-port', port),
+  updateMariaDbPort: (port: number) => ipcRenderer.invoke('weebx:mariadb-port', port),
   repairLocation: (path?: string) => ipcRenderer.invoke('weebx:repair-location', path),
   openPath: (path: string) => ipcRenderer.invoke('weebx:open-path', path),
   openExternal: (url: string) => ipcRenderer.invoke('weebx:open-external', url),
   chooseDirectory: () => ipcRenderer.invoke('weebx:choose-directory'),
+  completeSecuritySetup: (password) => ipcRenderer.invoke('weebx:security-setup', password),
   changeMariaDbPassword: (password) => ipcRenderer.invoke('weebx:mariadb-password', password),
+  revealMariaDbPassword: () => ipcRenderer.invoke('weebx:mariadb-password-reveal'),
+  setPermissions: (target: PermissionTarget, preset: PermissionPreset) => ipcRenderer.invoke('weebx:permissions-set', target, preset),
   isUninstall: uninstallRequested,
   onOpenUninstall: (callback) => {
     uninstallListeners.add(callback)

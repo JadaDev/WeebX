@@ -1,9 +1,8 @@
 import { randomBytes } from 'node:crypto'
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { PhpProfile, RuntimeSettings } from '../shared/types'
 import { runtimePaths } from './paths'
-import { phpSingleQuoted } from './mariadb-password'
 import { backupAndWrite, ensureDirectory } from './safe-file'
 import { ensureWelcomeSite } from './welcome-site'
 
@@ -12,6 +11,39 @@ export function upsertIni(content: string, key: string, value: string): string {
   const pattern = new RegExp(`^\\s*${key}\\s*=.*$`, 'gmi')
   const next = content.replace(pattern, line)
   return next === content ? `${content.trimEnd()}\r\n${line}\r\n` : next
+}
+
+export function apacheSecurityBlock(documentRoot: string): string {
+  const root = documentRoot.replace(/\\/g, '/')
+  return `# BEGIN WEEBX SECURITY DEFAULTS
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+Timeout 60
+KeepAlive On
+KeepAliveTimeout 5
+RequestReadTimeout header=20-40,MinRate=500 body=20,MinRate=500
+<Directory />
+    AllowOverride None
+    Require all denied
+</Directory>
+DocumentRoot "${root}"
+<Directory "${root}">
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+<FilesMatch "^\\.(?!well-known)">
+    Require all denied
+</FilesMatch>
+<FilesMatch "(?i)(?:^|\\.)(?:env|ini|log|sql|bak|dist|config|secret|key)$|^(?:composer\\.(?:json|lock)|package-lock\\.json|web\\.config)$">
+    Require all denied
+</FilesMatch>
+<LocationMatch "^/(?:phpmyadmin(?:/|$)|phpinfo\\.php$)">
+    Require local
+</LocationMatch>
+# END WEEBX SECURITY DEFAULTS
+`
 }
 
 type ConfigKind = 'php' | 'apache' | 'vhosts' | 'mariadb'
@@ -37,6 +69,7 @@ export class ConfigManager {
       ensureDirectory(paths.certificates),
       ensureDirectory(paths.temp),
       ensureDirectory(paths.mariadbData),
+      ensureDirectory(join(paths.root, 'logs')),
       ensureDirectory(join(paths.apache, 'logs')),
       ensureDirectory(join(paths.apache, 'conf', 'extra'))
     ])
@@ -45,6 +78,7 @@ export class ConfigManager {
     await ensureDirectory(paths.phpMyAdminTemp)
     await writeIfMissing(paths.vhostsConf, this.vhostExample(settings))
     await writeIfMissing(paths.mariadbConf, this.mariaDbTemplate(settings))
+    await this.ensureApacheSecurity()
     await ensureWelcomeSite(paths.htdocs, settings)
     await this.ensurePhpRuntime()
     await this.writePhpMyAdminConfig()
@@ -85,14 +119,20 @@ export class ConfigManager {
 $cfg['blowfish_secret'] = '${secret}';
 $cfg['TempDir'] = '${tempDir}';
 $cfg['DefaultLang'] = 'en';
+$cfg['AllowArbitraryServer'] = false;
+$cfg['LoginCookieValidity'] = 1800;
+$cfg['LoginCookieStore'] = 0;
+$cfg['LoginCookieDeleteAll'] = true;
 $cfg['Servers'][1]['auth_type'] = 'cookie';
 $cfg['Servers'][1]['host'] = '127.0.0.1';
 $cfg['Servers'][1]['port'] = '${settings.mariadbPort}';
 $cfg['Servers'][1]['compress'] = false;
 $cfg['Servers'][1]['AllowNoPassword'] = ${settings.mariadbPassword ? 'false' : 'true'};
-$cfg['Servers'][1]['user'] = 'root';
-$cfg['Servers'][1]['password'] = '${phpSingleQuoted(settings.mariadbPassword)}';
 `, 'utf8')
+    // phpMyAdmin is local-only and opened over loopback HTTP by the desktop
+    // panel. Keep its session usable without weakening production cookies for
+    // hosted applications.
+    await writeFile(join(paths.phpMyAdmin, '.user.ini'), `display_errors=Off\nsession.cookie_secure=0\nsession.cookie_httponly=1\nsession.cookie_samesite=Lax\n`, 'utf8')
   }
 
   async read(kind: ConfigKind): Promise<string> {
@@ -132,6 +172,7 @@ log_errors=On
 post_max_size=128M
 upload_max_filesize=128M
 max_file_uploads=20
+session.upload_progress.enabled=0
 date.timezone=UTC
 extension_dir="${extensionDir.replace(/\\/g, '/')}"
 extension=curl
@@ -155,14 +196,16 @@ extension=zip
     let base = ''
     try { base = await readFile(source, 'utf8') } catch { base = this.phpTemplate(`${versionRoot}\\ext`) }
     const hasDynamicOpcache = await exists(`${versionRoot}\\ext\\php_opcache.dll`)
-    const managed = this.phpManagedBlock(settings, `${versionRoot}\\ext`, profile, hasDynamicOpcache)
+    const availableExtensions = new Set((await readdir(`${versionRoot}\\ext`).catch(() => [])).map((name) => name.toLowerCase()))
+    const managed = this.phpManagedBlock(settings, `${versionRoot}\\ext`, profile, hasDynamicOpcache, availableExtensions)
     await backupAndWrite(target, `${base.trimEnd()}\r\n\r\n${managed.replace(/\n/g, '\r\n')}`)
   }
 
-  private phpManagedBlock(settings: RuntimeSettings, extensionDir: string, profile: PhpProfile, hasDynamicOpcache: boolean): string {
+  private phpManagedBlock(settings: RuntimeSettings, extensionDir: string, profile: PhpProfile, hasDynamicOpcache: boolean, availableExtensions: Set<string>): string {
     const paths = runtimePaths(settings)
     const slash = (value: string) => value.replace(/\\/g, '/')
     const extensions = ['bz2', 'curl', 'fileinfo', 'ftp', 'gd', 'gettext', 'gmp', 'intl', 'mbstring', 'exif', 'mysqli', 'openssl', 'pdo_mysql', 'pdo_sqlite', 'soap', 'sockets', 'sodium', 'sqlite3', 'xsl', 'zip']
+      .filter((name) => availableExtensions.has(`php_${name}.dll`))
     return `; BEGIN WEEBX MANAGED SETTINGS
 extension_dir="${extensionDir.replace(/\\/g, '/')}"
 ${extensions.map((name) => `extension=${name}`).join('\n')}
@@ -175,10 +218,23 @@ upload_max_filesize=128M
 display_errors=${profile === 'development' ? 'On' : 'Off'}
 display_startup_errors=${profile === 'development' ? 'On' : 'Off'}
 log_errors=On
+error_log="${slash(join(paths.root, 'logs', 'php-error.log'))}"
 error_reporting=E_ALL
 expose_php=${profile === 'development' ? 'On' : 'Off'}
+allow_url_include=Off
+zend.exception_ignore_args=${profile === 'development' ? 'Off' : 'On'}
+zend.exception_string_param_max_len=${profile === 'development' ? '15' : '0'}
+zend.assertions=${profile === 'development' ? '1' : '-1'}
 session.save_handler=files
 session.save_path="${slash(paths.sessions)}"
+session.use_strict_mode=1
+session.use_cookies=1
+session.use_only_cookies=1
+session.use_trans_sid=0
+session.upload_progress.enabled=0
+session.cookie_httponly=1
+session.cookie_samesite=Lax
+session.cookie_secure=${profile === 'production' ? '1' : '0'}
 sys_temp_dir="${slash(paths.tmp)}"
 upload_tmp_dir="${slash(paths.tmp)}"
 opcache.enable=1
@@ -197,6 +253,7 @@ Listen ${settings.apacheSslPort}
 LoadModule actions_module modules/mod_actions.so
 LoadModule alias_module modules/mod_alias.so
 LoadModule authz_core_module modules/mod_authz_core.so
+LoadModule authz_host_module modules/mod_authz_host.so
 LoadModule cgi_module modules/mod_cgi.so
 LoadModule dir_module modules/mod_dir.so
 LoadModule env_module modules/mod_env.so
@@ -204,15 +261,11 @@ LoadModule headers_module modules/mod_headers.so
 LoadModule log_config_module modules/mod_log_config.so
 LoadModule mime_module modules/mod_mime.so
 LoadModule rewrite_module modules/mod_rewrite.so
+LoadModule reqtimeout_module modules/mod_reqtimeout.so
 LoadModule ssl_module modules/mod_ssl.so
 LoadModule socache_shmcb_module modules/mod_socache_shmcb.so
 ServerName localhost:${settings.apachePort}
-DocumentRoot "${slash(p.htdocs)}"
-<Directory "${slash(p.htdocs)}">
-    Options Indexes FollowSymLinks
-    AllowOverride All
-    Require all granted
-</Directory>
+${apacheSecurityBlock(p.htdocs).trimEnd()}
 DirectoryIndex index.php index.html
 ErrorLog "logs/error.log"
 LogLevel warn
@@ -239,7 +292,7 @@ Include conf/extra/httpd-vhosts.conf
     const p = runtimePaths(settings)
     return `[client]
 port=${settings.mariadbPort}
-socket=MySQL
+socket=MariaDB
 
 [mysqld]
 port=${settings.mariadbPort}
@@ -248,9 +301,13 @@ datadir=${p.mariadbData.replace(/\\/g, '/')}
 character-set-server=utf8mb4
 collation-server=utf8mb4_unicode_ci
 max_allowed_packet=128M
+local-infile=0
 skip-name-resolve
+skip-symbolic-links
+feedback=OFF
 bind-address=127.0.0.1
-# Default account: root @ 127.0.0.1 / localhost with no password
+# MariaDB is intentionally reachable only from this machine.
+# The root password is set during first-run security setup and protected by Windows.
 `
   }
 
@@ -265,7 +322,7 @@ bind-address=127.0.0.1
 #     ServerAlias www.test.jadadev.com
 #     DocumentRoot "${root}/test-jadadev-com"
 #     <Directory "${root}/test-jadadev-com">
-#         Options Indexes FollowSymLinks
+#         Options -Indexes +FollowSymLinks
 #         AllowOverride All
 #         Require all granted
 #     </Directory>
@@ -279,7 +336,7 @@ bind-address=127.0.0.1
 #     SSLCertificateFile "certificates/test-jadadev-com/server.crt"
 #     SSLCertificateKeyFile "certificates/test-jadadev-com/server.key"
 #     <Directory "${root}/test-jadadev-com">
-#         Options Indexes FollowSymLinks
+#         Options -Indexes +FollowSymLinks
 #         AllowOverride All
 #         Require all granted
 #     </Directory>
@@ -289,6 +346,26 @@ bind-address=127.0.0.1
 # One-click sites appear here. Content outside these markers is preserved.
 # END WEEBX MANAGED VHOSTS
 `
+  }
+
+  private async ensureApacheSecurity(): Promise<void> {
+    const settings = await this.getSettings()
+    const paths = runtimePaths(settings)
+    if (!(await exists(paths.apacheConf))) return
+    let current = await readFile(paths.apacheConf, 'utf8')
+    const requiredModules = [
+      ['reqtimeout_module', 'modules/mod_reqtimeout.so'],
+      ['authz_host_module', 'modules/mod_authz_host.so']
+    ] as const
+    for (const [name, file] of requiredModules) {
+      if (!new RegExp(`^\\s*LoadModule\\s+${name}\\s+`, 'mi').test(current)) current = `LoadModule ${name} ${file}\r\n${current}`
+    }
+    const begin = '# BEGIN WEEBX SECURITY DEFAULTS'
+    const end = '# END WEEBX SECURITY DEFAULTS'
+    const pattern = new RegExp(`${begin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g')
+    current = current.replace(pattern, '').trimEnd()
+    const block = apacheSecurityBlock(settings.htdocsRoot)
+    await backupAndWrite(paths.apacheConf, `${current}\r\n\r\n${block.replace(/\n/g, '\r\n')}`)
   }
 
 }

@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto'
-import { access, cp, mkdir, open, readdir, rm } from 'node:fs/promises'
+import { access, cp, mkdir, open, readdir, rm, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { spawn } from 'node:child_process'
-import type { InstallProgress, InstallRequest, InstallResult, PhpProfile, PhpVersion } from '../shared/types'
+import type { InstallProgress, InstallRequest, InstallResult, PhpProfile, PhpRelease, PhpVersion } from '../shared/types'
 import type { JsonStore } from './store'
 import type { ConfigManager } from './config-manager'
 import type { LogBuffer } from './logs'
 import { runtimePaths } from './paths'
 import { isPhpMyAdminInstall, mariaDbHasData, preserveDuringUpdate, STACK_PRESERVE } from './stack-components'
+import { runMariaDbClient } from './mariadb-password'
+import { WEEBX_VERSION } from '../shared/version'
 
 type ProgressListener = (progress: InstallProgress) => void
 const ALLOWED_DOWNLOAD_HOSTS = new Set(['downloads.php.net', 'windows.php.net', 'www.apachelounge.com', 'mirror.mariadb.org', 'archive.mariadb.org', 'files.phpmyadmin.net', 'www.phpmyadmin.net'])
@@ -20,6 +22,7 @@ export class Installer {
   private listeners = new Set<ProgressListener>()
   private activeStartedAt = 0
   private downloadStartedAt = 0
+  private phpReleaseCache: { expires: number; releases: PhpRelease[] } | null = null
 
   constructor(
     private readonly store: JsonStore,
@@ -35,12 +38,11 @@ export class Installer {
   async phpVersions(): Promise<PhpVersion[]> {
     const settings = await this.store.getSettings()
     const paths = runtimePaths(settings)
-    const supported = ['8.2.35', '8.3.36', '8.4.27', '8.5.12']
     let installed: string[] = []
     try {
       installed = (await readdir(paths.php, { withFileTypes: true })).filter((item) => item.isDirectory()).map((item) => item.name)
     } catch { /* empty */ }
-    return [...new Set([...supported, ...installed])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((version) => ({
+    return installed.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((version) => ({
       version,
       installed: installed.includes(version),
       active: settings.activePhpVersion === version,
@@ -49,10 +51,103 @@ export class Installer {
     }))
   }
 
+  async discoverPhpReleases(): Promise<PhpRelease[]> {
+    if (this.phpReleaseCache && this.phpReleaseCache.expires > Date.now()) return this.phpReleaseCache.releases
+    const response = await this.fetchTrusted('https://windows.php.net/downloads/releases/releases.json', { 'User-Agent': `Mozilla/5.0 WeebX/${WEEBX_VERSION}` })
+    if (!response.ok) throw new Error(`PHP release lookup failed: HTTP ${response.status}.`)
+    const length = Number(response.headers.get('content-length')) || 0
+    if (length > 2_000_000) throw new Error('The PHP release list is unexpectedly large.')
+    const text = await response.text()
+    if (text.length > 2_000_000) throw new Error('The PHP release list is unexpectedly large.')
+    let metadata: Record<string, unknown>
+    try { metadata = JSON.parse(text) as Record<string, unknown> } catch { throw new Error('PHP returned an invalid release list.') }
+
+    const found: PhpRelease[] = []
+    for (const [branch, rawRelease] of Object.entries(metadata)) {
+      if (!/^\d+\.\d+$/.test(branch) || !rawRelease || typeof rawRelease !== 'object') continue
+      const [major, minor] = branch.split('.').map(Number)
+      if (major < 8 || (major === 8 && minor < 2)) continue
+      const release = rawRelease as Record<string, unknown>
+      const version = typeof release.version === 'string' ? release.version : ''
+      const variantEntry = Object.entries(release).find(([key, value]) => /^nts-vs\d+-x64$/i.test(key) && value && typeof value === 'object')
+      if (!/^\d+\.\d+\.\d+$/.test(version) || !variantEntry) continue
+      const [compiler, rawVariant] = variantEntry
+      const zip = (rawVariant as Record<string, unknown>).zip
+      if (!zip || typeof zip !== 'object') continue
+      const path = (zip as Record<string, unknown>).path
+      const sha256 = (zip as Record<string, unknown>).sha256
+      const size = (zip as Record<string, unknown>).size
+      if (typeof path !== 'string' || !/^php-[\w.-]+\.zip$/i.test(path) || typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(sha256)) continue
+      found.push({
+        version,
+        branch,
+        url: `https://windows.php.net/downloads/releases/${path}`,
+        sha256,
+        size: typeof size === 'string' ? size : 'Unknown size',
+        compiler: compiler.replace(/^nts-/i, '').toUpperCase(),
+        channel: 'stable'
+      })
+    }
+    found.sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))
+    if (!found.length) throw new Error('No compatible Windows x64 NTS PHP releases were found.')
+    this.phpReleaseCache = { expires: Date.now() + 15 * 60_000, releases: found }
+    return found
+  }
+
+  async importPhpArchive(archive: string): Promise<PhpVersion> {
+    if (process.platform !== 'win32') throw new Error('Manual PHP import currently requires Windows.')
+    if (!/\.zip$/i.test(archive)) throw new Error('Choose a PHP ZIP archive.')
+    const archiveInfo = await stat(archive)
+    if (!archiveInfo.isFile() || archiveInfo.size <= 0 || archiveInfo.size > 2 * 1024 * 1024 * 1024) throw new Error('The selected PHP archive is empty or too large.')
+    const settings = await this.store.getSettings()
+    const paths = runtimePaths(settings)
+    await mkdir(paths.temp, { recursive: true })
+    const staging = join(paths.temp, `php-import-${crypto.randomUUID()}`)
+    const request: InstallRequest = { component: 'php', version: 'manual', url: 'https://windows.php.net/', sha256: '0'.repeat(64) }
+    this.activeStartedAt = Date.now()
+    let target = ''
+    try {
+      this.emit(request, 'extracting', 10, 'Inspecting the selected PHP archive...')
+      await mkdir(staging, { recursive: true })
+      await this.extractArchive(archive, staging)
+      const source = await this.findPayloadRoot('php', staging)
+      for (const required of ['php.exe', 'php-cgi.exe', 'ext']) {
+        if (!(await exists(join(source, required)))) throw new Error(`This archive is missing ${required}. Choose the official Windows x64 NTS ZIP, not a source or development pack.`)
+      }
+      const details = await this.runOutput(join(source, 'php.exe'), ['-n', '-r', "echo PHP_VERSION,'|',PHP_INT_SIZE*8,'|',(PHP_ZTS?'TS':'NTS');"])
+      const match = details.trim().match(/^(\d+\.\d+\.\d+)\|64\|NTS$/)
+      if (!match) throw new Error('WeebX requires a Windows x64 Non-Thread-Safe PHP build with php-cgi.exe.')
+      const version = match[1]
+      const [major, minor] = version.split('.').map(Number)
+      if (major < 8 || (major === 8 && minor < 2)) throw new Error('PHP 8.2 or newer is required. Older branches are unsafe for live hosting.')
+      target = join(paths.php, version)
+      if (await exists(target)) throw new Error(`The PHP ${version} folder already exists. Rename or remove it before importing.`)
+      this.emit({ ...request, version }, 'extracting', 70, `Validated PHP ${version} x64 NTS. Copying files...`)
+      await mkdir(paths.php, { recursive: true })
+      await cp(source, target, { recursive: true, errorOnExist: true })
+      await this.configs.applyPhpProfile(version, settings.phpProfile)
+      this.emit({ ...request, version }, 'complete', 100, `PHP ${version} imported and configured.`)
+      this.logs.add('system', 'info', `Imported and validated PHP ${version} x64 NTS from ${basename(archive)}.`)
+      return { version, installed: true, active: settings.activePhpVersion === version, channel: 'stable', path: target }
+    } catch (error) {
+      if (target) await rm(target, { recursive: true, force: true }).catch(() => undefined)
+      const message = error instanceof Error ? error.message : String(error)
+      this.emit(request, 'error', 0, message)
+      throw error
+    } finally {
+      await rm(staging, { recursive: true, force: true })
+    }
+  }
+
   async install(request: InstallRequest): Promise<InstallResult> {
+    if (!request || !['apache', 'mariadb', 'php', 'phpmyadmin'].includes(request.component) ||
+        typeof request.url !== 'string' || typeof request.version !== 'string' || typeof request.sha256 !== 'string') {
+      throw new Error('Invalid component installation request.')
+    }
     const url = new URL(request.url)
     if (url.protocol !== 'https:' || !ALLOWED_DOWNLOAD_HOSTS.has(url.hostname)) throw new Error('This download source is not trusted by WeebX.')
     if (!/^\d+(?:\.\d+){1,2}$/.test(request.version)) throw new Error('Invalid component version.')
+    if (!/^[a-f0-9]{64}$/i.test(request.sha256)) throw new Error('A valid SHA-256 checksum is required for every component install.')
     const settings = await this.store.getSettings()
     const paths = runtimePaths(settings)
     await mkdir(paths.temp, { recursive: true })
@@ -66,7 +161,7 @@ export class Installer {
     try {
       const digest = await this.download(request, archive)
       this.emit(request, 'verifying', 100, request.sha256 ? 'Verifying SHA-256 checksum…' : `Downloaded (SHA-256 ${digest.slice(0, 12)}…).`)
-      if (request.sha256 && digest.toLowerCase() !== request.sha256.toLowerCase()) throw new Error('SHA-256 checksum does not match the published value.')
+      if (digest.toLowerCase() !== request.sha256.toLowerCase()) throw new Error('SHA-256 checksum does not match the published value.')
       await mkdir(staging, { recursive: true })
       await this.withHeartbeat(request, 'extracting', 15, 'Extracting package. Large archives can take several minutes...', async () => {
         await this.extractArchive(archive, staging)
@@ -112,19 +207,20 @@ export class Installer {
     if (profile !== 'development' && profile !== 'production') throw new Error('Unknown PHP profile.')
     const settings = await this.store.updateSettings({ phpProfile: profile })
     await this.configs.applyPhpProfile(settings.activePhpVersion, profile)
+    await this.configs.ensureLayout()
     this.logs.add('system', 'info', `Applied the PHP ${profile} profile to ${settings.activePhpVersion}.`)
   }
 
   private async download(request: InstallRequest, destination: string): Promise<string> {
     this.downloadStartedAt = Date.now()
     this.emit(request, 'downloading', 0, `Downloading ${basename(new URL(request.url).pathname)}…`)
-    const headers: Record<string, string> = { 'User-Agent': 'Mozilla/5.0 WeebX/1.1' }
+    const headers: Record<string, string> = { 'User-Agent': `Mozilla/5.0 WeebX/${WEEBX_VERSION}` }
     if (new URL(request.url).hostname === 'www.apachelounge.com') headers.Referer = 'https://www.apachelounge.com/download/'
-    const response = await fetch(request.url, { redirect: 'follow', headers })
+    const response = await this.fetchTrusted(request.url, headers)
     if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}.`)
-    const finalUrl = new URL(response.url)
-    if (finalUrl.protocol !== 'https:' || !ALLOWED_DOWNLOAD_HOSTS.has(finalUrl.hostname)) throw new Error('The download redirected to an untrusted host.')
     const total = Number(response.headers.get('content-length')) || 0
+    const maximumBytes = 2 * 1024 * 1024 * 1024
+    if (total > maximumBytes) throw new Error('The component archive is unexpectedly large.')
     const reader = response.body.getReader()
     const file = await open(destination, 'w')
     const hash = createHash('sha256')
@@ -136,6 +232,7 @@ export class Installer {
         await file.write(value)
         hash.update(value)
         received += value.byteLength
+        if (received > maximumBytes) throw new Error('The component archive exceeded the safe download limit.')
         const elapsed = Math.max(1, (Date.now() - this.downloadStartedAt) / 1000)
         const etaSeconds = total > 0 && received > 0 ? Math.max(0, Math.ceil((elapsed / (received / total)) - elapsed)) : null
         this.emit(request, 'downloading', total ? Math.min(99, Math.round(received / total * 100)) : 0, total ? `${Math.round(received / 1048576)} / ${Math.round(total / 1048576)} MB` : `${Math.round(received / 1048576)} MB`, {
@@ -144,6 +241,21 @@ export class Installer {
       }
     } finally { await file.close() }
     return hash.digest('hex')
+  }
+
+  private async fetchTrusted(url: string, headers: Record<string, string>): Promise<Response> {
+    let current = new URL(url)
+    for (let redirect = 0; redirect <= 5; redirect += 1) {
+      if (current.protocol !== 'https:' || !ALLOWED_DOWNLOAD_HOSTS.has(current.hostname)) {
+        throw new Error('The download redirected to an untrusted host.')
+      }
+      const response = await fetch(current, { redirect: 'manual', headers })
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response
+      const location = response.headers.get('location')
+      if (!location) throw new Error('The download returned an invalid redirect.')
+      current = new URL(location, current)
+    }
+    throw new Error('The download exceeded the redirect limit.')
   }
 
   private targetFor(request: InstallRequest, settings: Awaited<ReturnType<JsonStore['getSettings']>>): string {
@@ -183,10 +295,8 @@ export class Installer {
     const paths = runtimePaths(settings)
     const upgrade = join(paths.mariadb, 'bin', 'mariadb-upgrade.exe')
     if (!(await exists(upgrade))) return
-    const args = ['--host=127.0.0.1', `--port=${settings.mariadbPort}`, '-uroot']
-    if (settings.mariadbPassword) args.push(`-p${settings.mariadbPassword}`)
     try {
-      await this.run(upgrade, args)
+      await runMariaDbClient(settings, [], '127.0.0.1', settings.mariadbPassword, upgrade, 60000)
       this.logs.add('system', 'info', 'MariaDB system tables were upgraded. Databases were kept.')
     } catch (error) {
       this.logs.add('system', 'warn', error instanceof Error ? error.message : String(error))
@@ -207,7 +317,14 @@ export class Installer {
     if (request.component === 'mariadb') {
       if (!(await exists(paths.mariadbConf))) await this.configs.save('mariadb', this.configs.mariaDbTemplate(settings))
       const installDb = join(paths.mariadb, 'bin', 'mariadb-install-db.exe')
-      if (!options.dataExisted && await exists(installDb)) await this.run(installDb, [`--datadir=${paths.mariadbData}`, '--password='])
+      if (!options.dataExisted && await exists(installDb)) {
+        // Initialize without placing a secret on the process command line. The
+        // first-run security flow applies the user's choice after the server is
+        // started through a protected temporary client option file.
+        await this.run(installDb, [`--datadir=${paths.mariadbData}`, '--password='])
+        await this.store.updateSettings({ mariadbPassword: '', setupComplete: false })
+        await this.configs.writePhpMyAdminConfig()
+      }
     }
     if (request.component === 'phpmyadmin') {
       await this.configs.writePhpMyAdminConfig()
@@ -224,9 +341,41 @@ export class Installer {
     })
   }
 
+  private runOutput(command: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, { windowsHide: true })
+      let output = ''
+      const timer = setTimeout(() => { child.kill(); reject(new Error('PHP validation timed out.')) }, 15000)
+      child.stdout.on('data', (data) => { output += data })
+      child.stderr.on('data', (data) => { output += data })
+      child.once('error', (error) => { clearTimeout(timer); reject(error) })
+      child.once('close', (code) => {
+        clearTimeout(timer)
+        code === 0 ? resolve(output) : reject(new Error(output.trim() || `PHP validation exited with code ${code}.`))
+      })
+    })
+  }
+
   private extractArchive(archive: string, destination: string): Promise<void> {
     if (process.platform !== 'win32') throw new Error('WeebX package extraction currently requires Windows.')
-    const script = '& { param($archive, $destination) Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force }'
+    const script = [
+      '& { param($archive, $destination)',
+      'Add-Type -AssemblyName System.IO.Compression.FileSystem;',
+      '$root=[IO.Path]::GetFullPath($destination + [IO.Path]::DirectorySeparatorChar);',
+      '$zip=[IO.Compression.ZipFile]::OpenRead($archive);',
+      'try {',
+      'if($zip.Entries.Count -gt 200000){throw "Archive contains too many files."};',
+      '[Int64]$total=0;',
+      'foreach($entry in $zip.Entries){',
+      '$total += $entry.Length;',
+      'if($total -gt 8GB){throw "Archive expands beyond the 8 GB safety limit."};',
+      '$target=[IO.Path]::GetFullPath([IO.Path]::Combine($destination,$entry.FullName));',
+      'if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw "Archive contains an unsafe path."}',
+      '}',
+      '} finally { $zip.Dispose() };',
+      'Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force',
+      '}'
+    ].join(' ')
     return this.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script, archive, destination])
   }
 

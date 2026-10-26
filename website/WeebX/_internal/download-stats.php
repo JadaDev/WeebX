@@ -101,6 +101,13 @@ function registerDownload(string $filename, string $visitorId): array
         $visitorHash = hash('sha256', $visitorId);
         $now = gmdate('c');
 
+        // Keep the anonymous counter bounded so forged cookies cannot grow the
+        // on-disk JSON file forever. Old identifiers are not needed for totals.
+        if (count($stats['visitors']) > 100000) {
+            asort($stats['visitors']);
+            $stats['visitors'] = array_slice($stats['visitors'], -75000, null, true);
+        }
+
         $stats['downloadStarts']++;
         if (!isset($stats['visitors'][$visitorHash])) {
             $stats['visitors'][$visitorHash] = $now;
@@ -109,6 +116,10 @@ function registerDownload(string $filename, string $visitorId): array
 
         $file = is_array($stats['files'][$filename] ?? null) ? $stats['files'][$filename] : ['downloads' => 0, 'starts' => 0, 'visitors' => []];
         $file['visitors'] = is_array($file['visitors'] ?? null) ? $file['visitors'] : [];
+        if (count($file['visitors']) > 100000) {
+            asort($file['visitors']);
+            $file['visitors'] = array_slice($file['visitors'], -75000, null, true);
+        }
         $file['starts'] = max(0, (int) ($file['starts'] ?? 0)) + 1;
         $file['downloads'] = max(0, (int) ($file['downloads'] ?? 0));
         if (!isset($file['visitors'][$visitorHash])) {

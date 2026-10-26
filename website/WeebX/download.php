@@ -5,11 +5,20 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . '_internal' . DIRECTORY_SEPARATOR .
 
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: no-referrer');
+header('X-Frame-Options: DENY');
+header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
+
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+if (!in_array($method, ['GET', 'HEAD'], true)) {
+    header('Allow: GET, HEAD');
+    http_response_code(405);
+    exit('Method not allowed.');
+}
 
 if (($_GET['stats'] ?? '') === '1') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, max-age=0');
-    echo json_encode(publicDownloadStats(), JSON_UNESCAPED_SLASHES);
+    if ($method !== 'HEAD') echo json_encode(publicDownloadStats(), JSON_UNESCAPED_SLASHES);
     exit;
 }
 
@@ -57,7 +66,7 @@ if (is_string($range) && $range !== '') {
     header("Content-Range: bytes {$start}-{$end}/{$size}");
 }
 
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') {
+if ($method !== 'HEAD') {
     registerDownload($requested, downloadVisitorId());
 }
 
@@ -69,7 +78,7 @@ header('Accept-Ranges: bytes');
 header('Content-Length: ' . (($end - $start) + 1));
 header('Cache-Control: private, no-transform');
 
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') exit;
+if ($method === 'HEAD') exit;
 
 $handle = fopen($filePath, 'rb');
 if ($handle === false) {

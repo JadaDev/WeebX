@@ -7,27 +7,28 @@ describe('MariaDB password helpers', () => {
     expect(phpSingleQuoted("O'Reilly")).toBe("O\\'Reilly")
   })
 
-  it('rejects unsafe passwords', () => {
+  it('allows empty and weak development passwords but rejects unsafe input', () => {
+    expect(() => assertMariaDbPassword('Strong!Password123')).not.toThrow()
     expect(() => assertMariaDbPassword('ok')).not.toThrow()
-    expect(() => assertMariaDbPassword(`bad\0`)).toThrow(/null/)
+    expect(() => assertMariaDbPassword('')).not.toThrow()
+    expect(() => assertMariaDbPassword(`bad\0`)).toThrow(/printable/i)
     expect(() => assertMariaDbPassword('x'.repeat(129))).toThrow(/too long/)
   })
 
-  it('explains a stopped MySQL without dumping the client command', () => {
-    expect(mariaDbPasswordError('Command failed: mariadb.exe -u root', false)).toBe('Start MySQL first, then change the password.')
-    expect(mariaDbPasswordError("Can't connect to MySQL server on '127.0.0.1'", true)).toBe('Start MySQL first, then change the password.')
+  it('explains a stopped MariaDB without dumping the client command', () => {
+    expect(mariaDbPasswordError('Command failed: mariadb.exe -u root', false)).toBe('Start MariaDB first, then change the password.')
+    expect(mariaDbPasswordError("Can't connect to MySQL server on '127.0.0.1'", true)).toBe('Start MariaDB first, then change the password.')
     expect(mariaDbPasswordError("ERROR 1045 (28000): Access denied for user 'root'@'127.0.0.1' (using password: NO)", true)).toMatch(/force-reset/i)
-    expect(mariaDbPasswordError("Command failed: mariadb.exe -u root -e ALTER USER 'root'@'%'", true)).toBe('Could not change the MySQL password.')
+    expect(mariaDbPasswordError("Command failed: mariadb.exe -u root -e ALTER USER 'root'@'%'", true)).toBe('Could not change the MariaDB password.')
     expect(isIgnorableMariaDbUserError("ERROR 1396 (HY000): Operation ALTER USER failed for 'root'@'%'")).toBe(true)
     expect(isIgnorableMariaDbUserError("ERROR 1146 (42S02): Table 'mysql.global_priv' doesn't exist")).toBe(true)
   })
 
-  it('uses skip-ssl and an explicit empty password for local root', () => {
+  it('keeps passwords out of MariaDB process arguments', () => {
     const args = clientArgs({ mariadbPort: 3306, mariadbPassword: '' } as never, ['-e', 'SELECT 1'])
     expect(args).toContain('--ssl=0')
-    expect(args).toContain('--password=')
     expect(args).toContain('--protocol=tcp')
-    expect(clientArgs({ mariadbPort: 3306, mariadbPassword: 'secret' } as never, [], '127.0.0.1', 'secret')).toContain('--password=secret')
+    expect(args.some((item) => item.includes('password'))).toBe(false)
   })
 
   it('tries stored, typed, new, and empty passwords without duplicates', () => {
@@ -38,7 +39,8 @@ describe('MariaDB password helpers', () => {
     const sql = rootPasswordSql("a'b")
     expect(sql.indexOf('FLUSH PRIVILEGES')).toBeLessThan(sql.indexOf('ALTER USER'))
     expect(sql).toContain("ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY 'a\\'b'")
-    expect(sql).toContain("ALTER USER 'root'@'%' IDENTIFIED BY 'a\\'b'")
+    expect(sql).not.toContain("ALTER USER 'root'@'%'")
+    expect(sql).toContain("DROP USER IF EXISTS ''@'%'")
     expect(sql).toContain('FLUSH PRIVILEGES')
   })
 })

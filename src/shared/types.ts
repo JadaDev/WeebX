@@ -1,6 +1,7 @@
 export type ServiceId = 'apache' | 'mariadb'
 export type ServiceState = 'running' | 'stopped' | 'starting' | 'stopping' | 'error'
 export type PhpProfile = 'development' | 'production'
+export type PasswordStrength = 'empty' | 'weak' | 'strong'
 export type AutoRestartDelayMs = 5000 | 10000 | 30000 | 60000 | 300000
 
 export interface ServiceStatus {
@@ -50,6 +51,7 @@ export interface RuntimeSettings {
   mariadbPassword: string
   activePhpVersion: string
   phpProfile: PhpProfile
+  setupComplete: boolean
   startOnLaunch: boolean
   minimizeToTray: boolean
   checkPortsBeforeStart: boolean
@@ -57,6 +59,36 @@ export interface RuntimeSettings {
   autoRestartApache: boolean
   autoRestartMariaDb: boolean
   autoRestartDelayMs: AutoRestartDelayMs
+}
+
+export type PublicRuntimeSettings = Omit<RuntimeSettings, 'mariadbPassword'> & {
+  mariadbPasswordSet: boolean
+  mariadbPasswordStrength: PasswordStrength
+}
+
+export interface MariaDbPasswordReveal {
+  password: string
+  protection: 'windows-encrypted-confirmation'
+}
+
+export interface PhpRelease {
+  version: string
+  branch: string
+  url: string
+  sha256: string
+  size: string
+  compiler: string
+  channel: 'security' | 'stable' | 'preview'
+}
+
+export type PermissionTarget = 'runtime' | 'htdocs' | 'database'
+export type PermissionPreset = 'private' | 'writable' | 'windows-default'
+
+export interface PermissionResult {
+  target: PermissionTarget
+  path: string
+  preset: PermissionPreset
+  message: string
 }
 
 export type StackComponentId = 'apache' | 'mariadb' | 'phpmyadmin'
@@ -72,7 +104,7 @@ export interface StackComponent {
 export interface DashboardSnapshot {
   services: ServiceStatus[]
   ports: PortInfo[]
-  settings: RuntimeSettings
+  settings: PublicRuntimeSettings
   phpVersions: PhpVersion[]
   virtualHosts: VirtualHost[]
   stackComponents: StackComponent[]
@@ -96,7 +128,7 @@ export interface InstallRequest {
   component: 'php' | 'apache' | 'mariadb' | 'phpmyadmin'
   version: string
   url: string
-  sha256?: string
+  sha256: string
 }
 
 export interface InstallProgress {
@@ -212,18 +244,23 @@ export interface WeebXApi {
   setVhostEnabled(id: string, enabled: boolean): Promise<VirtualHost>
   selectPhp(version: string): Promise<void>
   setPhpProfile(profile: PhpProfile): Promise<void>
+  discoverPhpReleases(): Promise<PhpRelease[]>
+  importPhpArchive(): Promise<PhpVersion | null>
   install(request: InstallRequest): Promise<InstallResult>
-  updateSettings(patch: Partial<RuntimeSettings>): Promise<RuntimeSettings>
-  updateMysqlPort(port: number): Promise<RuntimeSettings>
+  updateSettings(patch: Partial<RuntimeSettings>): Promise<PublicRuntimeSettings>
+  updateMariaDbPort(port: number): Promise<PublicRuntimeSettings>
   repairLocation(path?: string): Promise<RelocationResult>
   openPath(path: string): Promise<void>
   openExternal(url: string): Promise<void>
   chooseDirectory(): Promise<string | null>
-  changeMariaDbPassword(password: string): Promise<RuntimeSettings>
+  completeSecuritySetup(password: string): Promise<PublicRuntimeSettings>
+  changeMariaDbPassword(password: string): Promise<PublicRuntimeSettings>
+  revealMariaDbPassword(): Promise<MariaDbPasswordReveal | null>
+  setPermissions(target: PermissionTarget, preset: PermissionPreset): Promise<PermissionResult>
   isUninstall: boolean
   onOpenUninstall(callback: () => void): () => void
-  uninstallStatus(): Promise<{ apache: boolean; mysql: boolean; weebx: boolean }>
-  uninstallStop(): Promise<{ apache: boolean; mysql: boolean; weebx: boolean; stopped: number }>
+  uninstallStatus(): Promise<{ apache: boolean; mariadb: boolean; weebx: boolean }>
+  uninstallStop(): Promise<{ apache: boolean; mariadb: boolean; weebx: boolean; stopped: number }>
   uninstall(options?: { keepHtdocs?: boolean }): Promise<{ savedTo?: string | null }>
   packPortal(options: PortalOptions): Promise<PortalResult>
   unpackPortal(): Promise<PortalResult>

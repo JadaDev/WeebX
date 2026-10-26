@@ -175,10 +175,12 @@ export async function packPortal(
   if (!options.includeHtdocs) await fs.mkdir(join(runtimeDest, 'htdocs'), { recursive: true })
   if (!options.includeDb) await fs.mkdir(join(runtimeDest, 'mariadb', 'data'), { recursive: true })
 
-  const portableSettings: RuntimeSettings = {
-    ...settings,
+  const { mariadbPassword: _credentialNotExported, ...settingsWithoutCredential } = settings
+  const portableSettings = {
+    ...settingsWithoutCredential,
     runtimeRoot: join(dataRoot, 'runtime'),
-    htdocsRoot: join(dataRoot, 'runtime', 'htdocs')
+    htdocsRoot: join(dataRoot, 'runtime', 'htdocs'),
+    setupComplete: false
   }
   await fs.writeFile(join(dataRoot, 'weebx.json'), JSON.stringify({ settings: portableSettings, virtualHosts }, null, 2), 'utf8')
   const manifest: PortalManifest = {
@@ -197,6 +199,7 @@ export async function packPortal(
     `Websites (htdocs): ${options.includeHtdocs ? 'included' : 'phpMyAdmin only'}`,
     '',
     'Copy this whole folder anywhere, then double-click Launch WeebX.bat.',
+    'For security, database credentials are never exported. Complete security setup on the destination PC.',
     'WeebX will repair Apache, MariaDB, PHP, and virtual-host paths for the new location.',
     ''
   ].join('\r\n'), 'utf8')

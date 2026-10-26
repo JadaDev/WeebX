@@ -3,6 +3,16 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . '_internal' . DIRECTORY_SEPARATOR . 'download-stats.php';
 
+$cspNonce = base64_encode(random_bytes(18));
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('X-Frame-Options: DENY');
+header('Cross-Origin-Opener-Policy: same-origin');
+header('Cross-Origin-Resource-Policy: same-origin');
+header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests");
+if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+
 function e(?string $value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -52,7 +62,7 @@ function assetUrl(string $relativePath): string
     return $relativePath . '?v=' . rawurlencode($version);
 }
 
-$version = '1.1.29';
+$version = '2.0.5';
 $filesDir = __DIR__ . DIRECTORY_SEPARATOR . 'Files';
 $msi = pickDownload($filesDir, 'msi', ['WeebX-Installer-x64.msi']);
 $zip = pickDownload($filesDir, 'zip', ['WeebX.zip', 'WeebX-Portable.zip']);
@@ -64,10 +74,10 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script>document.documentElement.classList.replace('no-js', 'js')</script>
+    <script nonce="<?= e($cspNonce) ?>">document.documentElement.classList.replace('no-js', 'js')</script>
     <title>WeebX — Modern XAMPP Alternative for Windows</title>
     <meta name="description" content="Download WeebX, a modern XAMPP alternative for Windows with Apache, MariaDB and patched PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12 runtimes.">
-    <meta name="keywords" content="WeebX, XAMPP alternative, local web server, Apache, PHP 8.5, PHP 8.4, PHP 8.3, PHP 8.2, CVE-2026-109618, CVE-2026-109619, MariaDB, phpMyAdmin, Windows development environment">
+    <meta name="keywords" content="WeebX, local web hosting stack manager, XAMPP alternative, Windows web server, Apache, PHP, MariaDB, phpMyAdmin">
     <meta name="author" content="JadaDev">
     <meta name="application-name" content="WeebX">
     <meta name="robots" content="index, follow, max-image-preview:large">
@@ -78,7 +88,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     <link rel="apple-touch-icon" href="assets/weebx-logo.png">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="WeebX">
-    <meta property="og:title" content="WeebX — Your local web stack, under control">
+    <meta property="og:title" content="WeebX — Local Web Hosting Stack Manager">
     <meta property="og:description" content="A polished XAMPP alternative with four patched PHP runtimes, Apache, MariaDB, module controls, and crash recovery.">
     <meta property="og:url" content="https://weebx.jadadev.com/">
     <meta property="og:image" content="https://weebx.jadadev.com/assets/weebx-logo.png">
@@ -90,8 +100,8 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     <meta name="twitter:description" content="Apache, MariaDB and patched PHP 8.2.35 through 8.5.12 in one focused Windows app.">
     <meta name="twitter:image" content="https://weebx.jadadev.com/assets/weebx-logo.png">
     <link rel="stylesheet" href="<?= e(assetUrl('assets/style.css')) ?>">
-    <script type="application/ld+json">
-    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"WeebX","applicationCategory":"DeveloperApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"<?= e($version) ?>","description":"A modern local Apache, PHP and MariaDB control panel for Windows.","url":"https://weebx.jadadev.com/","image":"https://weebx.jadadev.com/assets/weebx-logo.png","author":{"@type":"Organization","name":"JadaDev"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+    <script type="application/ld+json" nonce="<?= e($cspNonce) ?>">
+    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"WeebX","applicationCategory":"DeveloperApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"<?= e($version) ?>","description":"A local web hosting stack manager with Apache, PHP and MariaDB for Windows.","url":"https://weebx.jadadev.com/","image":"https://weebx.jadadev.com/assets/weebx-logo.png","author":{"@type":"Organization","name":"JadaDev"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
     </script>
     <script src="<?= e(assetUrl('assets/site.js')) ?>" defer></script>
 </head>
@@ -104,7 +114,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
 <header class="topbar">
     <a class="brand" href="#top" aria-label="WeebX home">
         <img src="assets/weebx-logo.png" alt="WeebX logo">
-        <span><strong>WeebX</strong><small>Development Tool</small></span>
+        <span><strong>WeebX</strong><small>Hosting Stack Manager</small></span>
     </a>
     <nav aria-label="Primary navigation">
         <a href="#features">Features</a>
@@ -119,9 +129,9 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
 <main id="top">
     <section class="hero section-shell">
         <div class="hero-copy">
-            <span class="eyebrow"><i></i> BUILT FOR WINDOWS DEVELOPERS</span>
-            <h1>Your local web stack,<br><em>finally under control.</em></h1>
-            <p class="lead">Run Apache, PHP, MariaDB and phpMyAdmin from one fast, focused control panel—with virtual hosts, runtime tuning, safer updates, and automatic crash recovery.</p>
+            <span class="eyebrow"><i></i> BUILT FOR WINDOWS HOSTING</span>
+            <h1>Local Web Hosting<br><em>Stack Manager.</em></h1>
+            <p class="lead">Run Apache, PHP, MariaDB and phpMyAdmin from one focused control panel—with a development-first workflow, a hardened Live / Production profile, virtual hosts, safer updates, and automatic crash recovery.</p>
             <div class="hero-actions">
                 <?php if ($msi): ?>
                     <a class="button primary download-trigger" href="<?= e($msi['href']) ?>" data-file="<?= e($msi['name']) ?>">Download for Windows <span>↓</span></a>
@@ -140,34 +150,49 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
                 <div class="preview-body">
                     <aside><img src="assets/weebx-logo.png" alt=""><span></span><span></span><span></span><span></span></aside>
                     <div class="preview-main">
-                        <div class="preview-title"><div><small>LOCAL ENVIRONMENT</small><b>Dashboard</b></div><span>● Standard</span></div>
-                        <div class="preview-hero"><small>WORKSPACE ONLINE</small><strong>Your local web stack,<br><em>under control.</em></strong><div><i>Start all</i><i>Stop all</i></div></div>
-                        <div class="preview-services"><div><span>APACHE</span><b>Running</b><small>:80 · PID 4380</small></div><div><span>MYSQL</span><b>Running</b><small>:3306 · PID 5312</small></div></div>
+                        <div class="preview-title"><div><small>LOCAL WEB HOSTING STACK MANAGER</small><b>Dashboard</b></div><span>● Standard</span></div>
+                        <div class="preview-hero"><div class="preview-hero-copy"><small>HOSTING CONTROL PLANE</small><strong>Local Web Hosting<br><em>Stack Manager.</em></strong><div><i>Start all</i><i>Stop all</i></div></div><div class="preview-mini-orb"><b>2</b><small>RUNNING</small><em>2/2</em><i></i><i></i></div></div>
+                        <div class="preview-services"><div><span>APACHE HTTP SERVER</span><b>Running</b><small>2.4.69 · :80 · PID 4380</small></div><div><span>MARIADB SERVER</span><b>Running</b><small>12.3.3 · :3306 · PID 5312</small></div></div>
                     </div>
                 </div>
             </div>
-            <figcaption>One calm control plane for your entire local stack.</figcaption>
+            <figcaption>One calm control plane for your complete hosting stack.</figcaption>
         </figure>
     </section>
 
     <section class="signal-strip" aria-label="Included technologies">
-        <span>Apache</span><i></i><span>PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12</span><i></i><span>MariaDB</span><i></i><span>phpMyAdmin</span><i></i><span>Virtual Hosts</span>
+        <span>Apache 2.4.69</span><i></i><span>PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12</span><i></i><span>MariaDB 12.3.3</span><i></i><span>phpMyAdmin 5.2.3</span><i></i><span>Virtual Hosts</span>
     </section>
 
     <section id="features" class="section-shell content-section">
-        <div class="section-heading"><span>EVERYTHING IN ONE PLACE</span><h2>Local development without the friction.</h2><p>All the tools you expect, wrapped in a focused Windows experience.</p></div>
+        <div class="section-heading"><span>EVERYTHING IN ONE PLACE</span><h2>Web hosting without the friction.</h2><p>Develop locally, then run production websites from the same focused Windows control plane.</p></div>
         <div class="feature-grid">
-            <article class="feature-card featured"><div class="feature-icon">◫</div><span>CONTROL</span><h3>Start, stop, recover.</h3><p>Manage Apache and MySQL independently or together. Optional crash recovery restarts either service after the delay you choose.</p><div class="mini-status"><i></i><b>Apache is running</b><small>Auto-restart on</small></div></article>
-            <article class="feature-card"><div class="feature-icon">&lt;/&gt;</div><span>PHP</span><h3>Switch versions cleanly.</h3><p>Move between supported PHP builds, tune limits, and enable extensions without manually rebuilding your setup.</p></article>
+            <article class="feature-card featured"><div class="feature-icon">◫</div><span>CONTROL</span><h3>Start, stop, recover.</h3><p>Manage Apache and MariaDB independently or together. Optional crash recovery restarts either service after the delay you choose.</p><div class="mini-service-pair"><div class="mini-status"><i></i><b>Apache is running</b><small>2.4.69 · Auto-restart on</small></div><div class="mini-status"><i></i><b>MariaDB is running</b><small>12.3.3 · Loopback only</small></div></div></article>
+            <article class="feature-card"><div class="feature-icon">&lt;/&gt;</div><span>PHP</span><h3>Switch versions cleanly.</h3><p>Use bundled builds, discover new official x64 NTS releases automatically, or validate and import your own PHP ZIP.</p></article>
             <article class="feature-card"><div class="feature-icon">⌂</div><span>SITES</span><h3>Virtual hosts in minutes.</h3><p>Create local domains, project folders, HTTPS certificates, aliases, and hosts-file mappings from one form.</p></article>
             <article class="feature-card"><div class="feature-icon">⌁</div><span>PORTABLE</span><h3>Your projects stay yours.</h3><p>Keep websites and MariaDB data through normal updates, or pack the whole environment when you need to move it.</p></article>
             <article class="feature-card"><div class="feature-icon">⚙</div><span>MODULES</span><h3>Configure visually.</h3><p>Search and toggle PHP and Apache modules, edit core configuration, and validate changes before they go live.</p></article>
             <article class="feature-card"><div class="feature-icon">◎</div><span>VISIBILITY</span><h3>Know what happened.</h3><p>Inspect ports and detailed service logs. Intentional shutdowns stay informational; genuine failures retain diagnostics.</p></article>
+            <article class="feature-card"><div class="feature-icon">⌾</div><span>SECURITY</span><h3>Safe defaults, visible choices.</h3><p>Switch from Development to Live / Production, see password severity by environment, and apply guided NTFS permission presets.</p></article>
         </div>
     </section>
 
+    <section class="section-shell php-manager-showcase" aria-label="WeebX PHP version manager preview">
+        <div class="section-heading"><span>PHP VERSION CONTROL</span><h2>Install, validate, and switch<br>without rebuilding your stack.</h2><p>The preview mirrors the real WeebX 2.0.5 PHP manager: isolated versions, environment profiles, official release discovery, and guided manual import.</p></div>
+        <figure class="php-manager-window">
+            <div class="php-shot-head"><div><small>PHP RUNTIME</small><b>PHP versions</b></div><button>+ Add PHP version</button><div class="php-shot-profile"><span class="active">Development</span><span>Live / Production</span></div><em>Active <b>8.5.12</b></em></div>
+            <div class="php-shot-list">
+                <article><strong>8.2<small>.35</small></strong><div><b>PHP 8.2.35</b><span>Installed · isolated php.ini and extensions</span></div><button>Use this version</button></article>
+                <article><strong>8.3<small>.36</small></strong><div><b>PHP 8.3.36</b><span>Installed · isolated php.ini and extensions</span></div><button>Use this version</button></article>
+                <article><strong>8.4<small>.27</small></strong><div><b>PHP 8.4.27</b><span>Installed · isolated php.ini and extensions</span></div><button>Use this version</button></article>
+                <article class="selected"><strong>8.5<small>.12</small></strong><div><b>PHP 8.5.12</b><span>Installed · official Windows x64 NTS</span></div><i>✓ Active</i><button disabled>In use</button></article>
+            </div>
+            <figcaption><span>Automatic</span> reads official PHP Windows metadata and verifies SHA-256. <span>Manual / advanced</span> validates PHP 8.2+, x64, NTS, CGI, and extensions before installation.</figcaption>
+        </figure>
+    </section>
+
     <section id="stack" class="section-shell stack-section">
-        <div class="stack-copy"><span class="eyebrow"><i></i> CURRENT RUNTIME</span><h2>A complete stack.<br><em>Ready when you are.</em></h2><p>WeebX brings the familiar local-server pieces together without hiding their configuration files or locking your work into a proprietary format.</p><ul><li>Multiple supported PHP versions</li><li>Apache module and php.ini controls</li><li>MariaDB credentials and port management</li><li>Built-in phpMyAdmin access</li></ul></div>
+        <div class="stack-copy"><span class="eyebrow"><i></i> CURRENT RUNTIME</span><h2>A complete stack.<br><em>Ready when you are.</em></h2><p>WeebX brings the familiar local-server pieces together without hiding their configuration files or locking your work into a proprietary format. MariaDB is the community-developed open-source fork of MySQL; it keeps the familiar protocol and PHP drivers while WeebX uses the accurate MariaDB name throughout the interface.</p><ul><li>Multiple supported PHP versions</li><li>Apache module and php.ini controls</li><li>MariaDB credentials and port management</li><li>Built-in phpMyAdmin access</li></ul></div>
         <div class="stack-grid">
             <article><small>WEB SERVER</small><b>Apache</b><strong>2.4.69</strong></article>
             <article><small>DATABASE</small><b>MariaDB</b><strong>12.3.3</strong></article>
@@ -204,10 +229,10 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         </div>
         <aside class="php-risk-note">
             <div class="risk-icon" aria-hidden="true">!</div>
-            <div><span>THE RISK OF OLD PHP</span><h3>An outdated development server can become an attack path.</h3><p>Unpatched affected PHP workers serving web requests may allow an unauthenticated attacker to execute code, access data available to that worker, or cause denial of service. PHP identifies Apache <code>mod_php</code> as the highest-risk setup. PHP 8.1 and older are no longer supported upstream; a vendor may provide backports, but moving to a supported patched branch is the safer default.</p></div>
+            <div><span>THE RISK OF OLD PHP</span><h3>An outdated web server can become an attack path.</h3><p>Unpatched affected PHP workers serving web requests may allow an unauthenticated attacker to execute code, access data available to that worker, or cause denial of service. PHP identifies Apache <code>mod_php</code> as the highest-risk setup. PHP 8.1 and older are no longer supported upstream; a vendor may provide backports, but moving to a supported patched branch is the safer default.</p></div>
             <a href="#download">Upgrade with WeebX <span>&rarr;</span></a>
         </aside>
-        <p class="security-footnote">Security updates reduce known risk but do not replace safe configuration: keep local services off the public internet unless intentionally hardened, use strong database credentials, restrict firewall access, and continue applying future PHP updates.</p>
+        <p class="security-footnote">WeebX starts in Development, lets the user choose an empty or non-empty MariaDB password, and makes the risk visible with environment-aware warnings. Before public hosting, switch to Live / Production and resolve every password warning. MariaDB stays on loopback, phpMyAdmin and diagnostics remain local-only, directory listings are disabled, and PHP session upload progress is disabled following the latest upstream guidance. Public hosting still requires trusted TLS, firewall policy, application hardening, backups, monitoring, and prompt updates.</p>
     </section>
 
     <section id="download" class="section-shell download-section">
@@ -231,20 +256,20 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
             <details id="terms" open><summary><span>01</span><div><b>Terms of Use</b><small>License, responsibility, warranties, and limitations</small></div><i>+</i></summary><div class="legal-copy"><p>By downloading, installing, or using WeebX, you agree to these terms. If you do not agree, do not download or use the software.</p><p>WeebX source code is offered under the MIT License. You may use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies subject to that license and its copyright notice. Components bundled with or downloaded by WeebX remain subject to their own licenses.</p><p>You are responsible for your projects, databases, passwords, backups, firewall rules, port exposure, hosts-file changes, and compliance with laws that apply to your use. Do not use WeebX to host or distribute unlawful, harmful, infringing, or unauthorized material, or to interfere with systems you do not own or have permission to test.</p><p>The software is provided “as is,” without warranties of any kind. To the maximum extent permitted by law, the authors and contributors are not liable for data loss, downtime, lost profits, security incidents, or other damages arising from use or inability to use WeebX. Some jurisdictions do not allow every exclusion, so those limits apply only as far as legally permitted.</p></div></details>
             <details id="privacy"><summary><span>02</span><div><b>Privacy Policy</b><small>Website logs, local data, and network requests</small></div><i>+</i></summary><div class="legal-copy"><p>This website does not include account registration, advertising trackers, analytics scripts, or marketing cookies. The download-consent choice is handled in your browser and is not submitted to us by this page.</p><p>When a download begins, WeebX sets one strictly necessary, HTTP-only identifier cookie for up to one year. The server stores only a one-way hash of that random identifier so repeat downloads from the same browser do not inflate the public “people downloaded” count. The counter does not use the identifier to track browsing activity, and it does not store an IP address in its counter data. Clearing cookies or using another browser or device may create another anonymous count.</p><p>Like most hosted websites, the web server or hosting provider may separately process standard request data such as IP address, browser type, requested URL, referrer, timestamp, and download activity for delivery, security, and operational logging. Retention and access may also be governed by the hosting provider.</p><p>WeebX is designed to keep project files, configuration, credentials, and database content on your Windows device. It does not intentionally upload that content to JadaDev. When you request a component install or open an external documentation link, your device may connect to the relevant third-party provider, whose privacy terms then apply.</p><p>Do not place sensitive data in a publicly reachable document root. Protect database credentials, review enabled modules, and restrict network access according to your environment.</p></div></details>
             <details id="download-policy"><summary><span>03</span><div><b>Download &amp; Update Policy</b><small>Backups, compatibility, and release files</small></div><i>+</i></summary><div class="legal-copy"><p>Release files are provided for supported 64-bit Windows environments. Compatibility can vary with Windows updates, security software, occupied ports, permissions, and third-party runtime changes.</p><p>Normal WeebX updates are designed to preserve websites and MariaDB data, but no update process can replace a verified backup. Back up important data before installing, updating, relocating, repairing, or uninstalling a runtime. Download files only from the official WeebX site or repository.</p><p>Versions, included components, release availability, and support may change. Preview runtimes may be less stable and should not be used for critical work.</p></div></details>
-            <details id="third-party"><summary><span>04</span><div><b>Third-Party Software &amp; Trademarks</b><small>Independent projects and licenses</small></div><i>+</i></summary><div class="legal-copy"><p>Apache HTTP Server, PHP, MariaDB, phpMyAdmin, Windows, XAMPP, and other named products belong to their respective owners and are governed by their respective licenses and policies. Their inclusion or mention does not imply endorsement.</p><p>WeebX is an independent development tool and is not affiliated with, sponsored by, or endorsed by Apache Friends or the XAMPP project. “XAMPP” is used only to describe product category and compatibility expectations.</p></div></details>
+            <details id="third-party"><summary><span>04</span><div><b>Third-Party Software &amp; Trademarks</b><small>Independent projects and licenses</small></div><i>+</i></summary><div class="legal-copy"><p>Apache HTTP Server, PHP, MariaDB, phpMyAdmin, Windows, XAMPP, and other named products belong to their respective owners and are governed by their respective licenses and policies. Their inclusion or mention does not imply endorsement.</p><p>WeebX is an independent hosting stack manager and is not affiliated with, sponsored by, or endorsed by Apache Friends or the XAMPP project. “XAMPP” is used only to describe product category and compatibility expectations.</p></div></details>
         </div>
     </section>
 </main>
 
 <footer>
-    <div class="footer-main section-shell"><div class="footer-brand"><img src="assets/weebx-logo.png" alt=""><div><strong>WeebX</strong><p>A calmer local development environment for Windows.</p></div></div><div class="footer-links"><div><b>Product</b><a href="#features">Features</a><a href="#stack">Included stack</a><a href="#security">PHP security</a><a href="#download">Downloads</a></div><div><b>Legal</b><a href="#terms">Terms of Use</a><a href="#privacy">Privacy Policy</a><a href="#download-policy">Download Policy</a></div><div><b>Community</b><a href="https://github.com/JadaDev/WeebX" rel="noopener noreferrer">GitHub</a><a href="https://github.com/JadaDev/WeebX/issues" rel="noopener noreferrer">Report an issue</a><a href="https://github.com/JadaDev/WeebX/blob/main/LICENSE" rel="noopener noreferrer">MIT License</a></div></div></div>
+    <div class="footer-main section-shell"><div class="footer-brand"><img src="assets/weebx-logo.png" alt=""><div><strong>WeebX</strong><p>A local web hosting stack manager for Windows.</p></div></div><div class="footer-links"><div><b>Product</b><a href="#features">Features</a><a href="#stack">Included stack</a><a href="#security">PHP security</a><a href="#download">Downloads</a></div><div><b>Legal</b><a href="#terms">Terms of Use</a><a href="#privacy">Privacy Policy</a><a href="#download-policy">Download Policy</a></div><div><b>Community</b><a href="https://github.com/JadaDev/WeebX" rel="noopener noreferrer">GitHub</a><a href="https://github.com/JadaDev/WeebX/issues" rel="noopener noreferrer">Report an issue</a><a href="https://github.com/JadaDev/WeebX/blob/main/LICENSE" rel="noopener noreferrer">MIT License</a></div></div></div>
     <div class="footer-bottom section-shell"><span>© <?= date('Y') ?> JadaDev. WeebX <?= e($version) ?>.</span><small>WeebX is an independent XAMPP alternative for Windows and is not affiliated with Apache Friends or the XAMPP project.</small></div>
 </footer>
 
 <dialog class="consent-dialog" id="download-consent" aria-labelledby="consent-title">
     <div class="consent-head"><div class="consent-logo"><img src="assets/weebx-logo.png" alt=""></div><div><span>ONE LAST STEP</span><h2 id="consent-title">Review before downloading</h2></div><button type="button" class="dialog-close" aria-label="Close download dialog">×</button></div>
     <p class="consent-intro">You are about to download <strong id="consent-file">WeebX</strong>. Please confirm that you understand the usage terms.</p>
-    <div class="consent-summary"><div><b>Local development software</b><span>Back up important projects and databases before making runtime changes.</span></div><div><b>Provided without warranty</b><span>You are responsible for configuration, credentials, security, and lawful use.</span></div></div>
+    <div class="consent-summary"><div><b>Hosting and development software</b><span>Back up important projects and databases before making runtime changes.</span></div><div><b>Provided without warranty</b><span>You are responsible for configuration, credentials, security, and lawful use.</span></div></div>
     <label class="consent-check"><input type="checkbox" id="accept-terms"><span><i>✓</i></span><b>I have read and agree to the <a href="#terms" data-close-consent>Terms of Use</a>.</b></label>
     <label class="consent-check"><input type="checkbox" id="accept-privacy"><span><i>✓</i></span><b>I have read and acknowledge the <a href="#privacy" data-close-consent>Privacy Policy</a>.</b></label>
     <div class="consent-actions"><button type="button" class="button ghost dialog-cancel">Cancel</button><button type="button" class="button primary consent-download" disabled>Agree &amp; download <span>↓</span></button></div>

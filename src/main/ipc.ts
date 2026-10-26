@@ -4,7 +4,7 @@ import { promisify } from 'node:util'
 import { access, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import type { DashboardSnapshot, InstallRequest, PhpProfile, PortalOptions, PortalProgress, RuntimeSettings, ServiceId, VhostDraft } from '../shared/types'
+import type { DashboardSnapshot, InstallRequest, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, RuntimeSettings, ServiceId, VhostDraft } from '../shared/types'
 import type { JsonStore } from './store'
 import type { ProcessManager } from './process-manager'
 import type { ConfigManager } from './config-manager'
@@ -15,11 +15,13 @@ import type { RelocationManager } from './relocation-manager'
 import { inspectPorts } from './ports'
 import { runtimePaths } from './paths'
 import { recoverMariaDbPassword, syncStoredMariaDbPassword, mariaDbPasswordError, waitUntilPasswordWorks } from './mariadb-password'
-import { buildMsiUninstallScript, clearResetStateBeforeUninstall, findWeebXUninstallEntry, inspectStack, stopStackProcesses, uninstallHelperArgs } from './stack-shutdown'
+import { buildMsiUninstallScript, clearResetStateBeforeUninstall, findWeebXUninstallEntry, inspectStack, isDefaultUserDataForRemoval, stopStackProcesses, uninstallHelperArgs } from './stack-shutdown'
 import { preserveHtdocs } from './htdocs-preserve'
 import { packPortal, unpackPortal } from './portal-pack'
 import { applyApacheModules, applyPhpExtensions, applyPhpLimits, assertRuntimeTuneSave, loadRuntimeTune } from './runtime-tune'
 import { inspectStackComponents } from './stack-components'
+import { assertPasswordInput, publicRuntimeSettings } from './security'
+import { applyPermissionPreset } from './permissions'
 
 const execFileAsync = promisify(execFile)
 
@@ -59,9 +61,13 @@ function assertConfig(value: unknown): asserts value is 'php' | 'apache' | 'vhos
 export function registerIpc(deps: Dependencies): () => void {
   const { window, store, processes, configs, vhosts, installer, logs, relocation, exitForUninstall } = deps
   const channels: string[] = []
+  let passwordRevealPromptActive = false
   const handle = (channel: string, listener: (...args: any[]) => unknown) => {
     channels.push(channel)
-    ipcMain.handle(channel, listener)
+    ipcMain.handle(channel, (event, ...args) => {
+      if (event.sender !== window.webContents) throw new Error('Blocked an IPC request from an untrusted window.')
+      return listener(event, ...args)
+    })
   }
 
   handle('weebx:snapshot', async (): Promise<DashboardSnapshot> => {
@@ -87,7 +93,7 @@ export function registerIpc(deps: Dependencies): () => void {
     return {
       services,
       ports,
-      settings,
+      settings: publicRuntimeSettings(settings),
       phpVersions: await installer.phpVersions(),
       virtualHosts: await vhosts.list(),
       stackComponents: await inspectStackComponents(settings),
@@ -161,20 +167,30 @@ export function registerIpc(deps: Dependencies): () => void {
     const apache = processes.status('apache')
     if (apache.state === 'running' || apache.state === 'starting') await processes.restart('apache')
   })
+  handle('weebx:php-releases', () => installer.discoverPhpReleases())
+  handle('weebx:php-import', async () => {
+    const selection = await dialog.showOpenDialog(window, {
+      title: 'Choose a Windows PHP x64 NTS ZIP',
+      filters: [{ name: 'ZIP archives', extensions: ['zip'] }],
+      properties: ['openFile']
+    })
+    if (selection.canceled || !selection.filePaths[0]) return null
+    return installer.importPhpArchive(selection.filePaths[0])
+  })
   handle('weebx:install', async (_event, request: InstallRequest) => {
     const apache = processes.status('apache')
-    const mysql = processes.status('mariadb')
+    const mariadb = processes.status('mariadb')
     const apacheWas = apache.state === 'running' || apache.state === 'starting'
-    const mysqlWas = mysql.state === 'running' || mysql.state === 'starting'
+    const mariadbWas = mariadb.state === 'running' || mariadb.state === 'starting'
     if ((request.component === 'apache' || request.component === 'phpmyadmin') && apacheWas) await processes.stop('apache')
-    if (request.component === 'mariadb' && mysqlWas) await processes.stop('mariadb')
+    if (request.component === 'mariadb' && mariadbWas) await processes.stop('mariadb')
     const result = await installer.install(request)
     if (result.mariaDbNeedsUpgrade) {
       await processes.start('mariadb')
       await new Promise((resolve) => setTimeout(resolve, 1500))
       await installer.runMariaDbUpgrade()
-      if (!mysqlWas) await processes.stop('mariadb')
-    } else if (request.component === 'mariadb' && mysqlWas) {
+      if (!mariadbWas) await processes.stop('mariadb')
+    } else if (request.component === 'mariadb' && mariadbWas) {
       await processes.start('mariadb')
     }
     if ((request.component === 'apache' || request.component === 'phpmyadmin') && apacheWas) await processes.start('apache')
@@ -207,20 +223,20 @@ export function registerIpc(deps: Dependencies): () => void {
     if (safe.mariadbPort !== undefined) await configs.writeMariaDbPort(next.mariadbPort)
     await configs.writePhpMyAdminConfig()
     await vhosts.render()
-    return next
+    return publicRuntimeSettings(next)
   })
-  handle('weebx:mysql-port', async (_event, port: unknown) => {
+  handle('weebx:mariadb-port', async (_event, port: unknown) => {
     const value = Math.trunc(Number(port))
-    if (!Number.isFinite(value) || value < 1 || value > 65535) throw new Error('MySQL port must be between 1 and 65535.')
+    if (!Number.isFinite(value) || value < 1 || value > 65535) throw new Error('MariaDB port must be between 1 and 65535.')
     const running = ['running', 'starting'].includes(processes.status('mariadb').state)
     const next = await store.updateSettings({ mariadbPort: value })
     await configs.writeMariaDbPort(next.mariadbPort)
     await configs.writePhpMyAdminConfig()
     if (running) await processes.restart('mariadb')
     logs.add('system', 'info', running
-      ? `MySQL port changed to ${next.mariadbPort} and MySQL was restarted.`
-      : `MySQL port changed to ${next.mariadbPort}.`)
-    return next
+      ? `MariaDB port changed to ${next.mariadbPort} and MariaDB was restarted.`
+      : `MariaDB port changed to ${next.mariadbPort}.`)
+    return publicRuntimeSettings(next)
   })
   handle('weebx:repair-location', async (_event, selectedPath: unknown) => {
     await processes.stopAll()
@@ -247,28 +263,77 @@ export function registerIpc(deps: Dependencies): () => void {
     const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] })
     return result.canceled ? null : result.filePaths[0]
   })
-  handle('weebx:mariadb-password', async (_event, password: unknown) => {
-    if (typeof password !== 'string') throw new Error('Enter a password.')
+  const resetMariaDbPassword = async (password: string, initialSetup: boolean) => {
+    assertPasswordInput(password)
     const settings = await store.getSettings()
     const wasRunning = ['running', 'starting'].includes(processes.status('mariadb').state)
-    if (!wasRunning) throw new Error('Start MySQL first, then change the password.')
-    logs.add('system', 'info', 'Force-resetting the local MySQL root password.')
-    await processes.stop('mariadb')
+    if (!initialSetup && !wasRunning) throw new Error('Start MariaDB first, then change the password.')
+    logs.add('system', password ? 'info' : 'warn', initialSetup ? 'Applying the first-run MariaDB password choice.' : 'Resetting the local MariaDB root password.')
+    if (wasRunning) await processes.stop('mariadb')
     try {
       await recoverMariaDbPassword(settings, password)
     } catch (error) {
-      await processes.start('mariadb').catch(() => undefined)
+      if (wasRunning) await processes.start('mariadb', true).catch(() => undefined)
       throw new Error(mariaDbPasswordError(error instanceof Error ? error.message : String(error), true))
     }
-    await processes.start('mariadb')
-    if (!(await waitUntilPasswordWorks({ ...settings, mariadbPassword: password }, password))) {
-      throw new Error('MySQL started but did not accept the new password. Start MySQL and try again.')
-    }
-    const next = await store.updateSettings({ mariadbPassword: password })
+    const next = await store.updateSettings({ mariadbPassword: password, setupComplete: true })
     await configs.writePhpMyAdminConfig()
     await configs.ensureLayout()
-    logs.add('system', 'info', password ? 'MySQL root password was reset.' : 'MySQL root password was cleared.')
-    return next
+    await processes.start('mariadb', true)
+    if (!(await waitUntilPasswordWorks(next, password))) {
+      await store.updateSettings({ setupComplete: false })
+      throw new Error('MariaDB started but did not accept the new password. Run security setup again.')
+    }
+    if (!wasRunning) await processes.stop('mariadb')
+    logs.add('system', password ? 'info' : 'warn', password
+      ? (initialSetup ? 'First-run MariaDB setup is complete.' : 'MariaDB root password was reset.')
+      : 'MariaDB is using an empty root password. Keep it loopback-only and set a strong password before going live.')
+    return publicRuntimeSettings(next)
+  }
+  handle('weebx:security-setup', async (_event, password: unknown) => {
+    if (typeof password !== 'string') throw new Error('Choose a password or leave it empty.')
+    return resetMariaDbPassword(password, true)
+  })
+  handle('weebx:mariadb-password', async (_event, password: unknown) => {
+    if (typeof password !== 'string') throw new Error('Enter a password.')
+    return resetMariaDbPassword(password, false)
+  })
+  handle('weebx:mariadb-password-reveal', async () => {
+    if (passwordRevealPromptActive) return null
+    passwordRevealPromptActive = true
+    try {
+      const result = await dialog.showMessageBox(window, {
+        type: 'warning',
+        title: 'Reveal MariaDB password',
+        message: 'Show the saved MariaDB root password?',
+        detail: 'Only continue in private. The password will be decrypted for this screen and hidden automatically after 30 seconds.',
+        buttons: ['Cancel', 'Reveal password'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      })
+      if (result.response !== 1) return null
+      return {
+        password: (await store.getSettings()).mariadbPassword,
+        protection: 'windows-encrypted-confirmation' as const
+      }
+    } finally {
+      passwordRevealPromptActive = false
+    }
+  })
+  handle('weebx:permissions-set', async (_event, target: PermissionTarget, preset: PermissionPreset) => {
+    if (!['runtime', 'htdocs', 'database'].includes(String(target))) throw new Error('Unknown permission target.')
+    if (!['private', 'writable', 'windows-default'].includes(String(preset))) throw new Error('Unknown permission preset.')
+    const running = processes.list().filter((service) => service.state === 'running' || service.state === 'starting').map((service) => service.id)
+    const affected = target === 'runtime' ? running : target === 'database' ? running.filter((id) => id === 'mariadb') : running.filter((id) => id === 'apache')
+    for (const id of affected) await processes.stop(id)
+    try {
+      const result = await applyPermissionPreset(await store.getSettings(), target, preset)
+      logs.add('system', 'info', result.message)
+      return result
+    } finally {
+      for (const id of affected) await processes.start(id)
+    }
   })
   handle('weebx:uninstall-status', async () => {
     const settings = await store.getSettings()
@@ -290,7 +355,7 @@ export function registerIpc(deps: Dependencies): () => void {
       try { await shell.openPath(savedTo) } catch { /* folder still exists */ }
     }
     const entry = await findWeebXUninstallEntry()
-    if (!entry || !/^\{[0-9A-F-]+\}$/i.test(entry.guid)) throw new Error('Could not find the WeebX MSI. Use Windows Settings > Apps to remove it after stopping Apache and MySQL here.')
+    if (!entry || !/^\{[0-9A-F-]+\}$/i.test(entry.guid)) throw new Error('Could not find the WeebX MSI. Use Windows Settings > Apps to remove it after stopping Apache and MariaDB here.')
     const userData = app.getPath('userData')
     await clearResetStateBeforeUninstall(userData, settings.runtimeRoot)
     const scriptPath = join(tmpdir(), 'weebx-uninstall.vbs')
@@ -298,7 +363,9 @@ export function registerIpc(deps: Dependencies): () => void {
     await rm(startedMarker, { force: true })
     await writeFile(scriptPath, buildMsiUninstallScript({
       guid: entry.guid,
-      removeAppData: true,
+      // Portable Portal data can live beside its EXE. Never recursively remove
+      // that custom folder while uninstalling the normal MSI application.
+      removeAppData: isDefaultUserDataForRemoval(app.getPath('appData'), userData),
       userData,
       startedMarker,
       uninstallerPid: process.pid

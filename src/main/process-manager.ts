@@ -24,6 +24,23 @@ export function describeProcessExit(label: string, code: number | null, intentio
   return { level: 'error', state: 'error', log: message, message }
 }
 
+export function classifyServiceOutput(output: string, stopping = false): 'info' | 'warn' | 'error' {
+  if (stopping) return 'info'
+  let result: 'info' | 'warn' | 'error' = 'info'
+  for (const line of output.split(/\r?\n/).filter(Boolean)) {
+    const explicitError = /\[(?:error|fatal)\]|:(?:emerg|alert|crit|error)\]/i.test(line)
+    const explicitWarning = /\[(?:warning|warn)\]|:warn\]/i.test(line)
+    const explicitInformation = /\[(?:note|system|info|notice)\]|:(?:notice|info)\]/i.test(line)
+    const level = explicitError ? 'error'
+      : explicitWarning ? 'warn'
+        : explicitInformation ? 'info'
+          : /error|fatal|failed|exception/i.test(line) ? 'error' : 'warn'
+    if (level === 'error') return 'error'
+    if (level === 'warn') result = 'warn'
+  }
+  return result
+}
+
 export class ProcessManager {
   private children = new Map<ServiceId, ChildProcessWithoutNullStreams>()
   private statuses = new Map<ServiceId, ServiceStatus>()
@@ -58,18 +75,21 @@ export class ProcessManager {
     return () => this.listeners.delete(listener)
   }
 
-  async start(id: ServiceId): Promise<ServiceStatus> {
+  async start(id: ServiceId, allowBeforeSetup = false): Promise<ServiceStatus> {
     this.cancelRestart(id)
     this.intentionalStops.delete(id)
     const current = this.statuses.get(id)!
     if (current.state === 'running' || current.state === 'starting') return { ...current }
     const settings = await this.store.getSettings()
+    if (!settings.setupComplete && !allowBeforeSetup) {
+      return this.update(id, { state: 'error', message: 'Complete first-run security setup before starting public services.' })
+    }
     const paths = runtimePaths(settings)
     const executable = id === 'apache' ? paths.apacheExe : paths.mariadbExe
     const port = id === 'apache' ? settings.apachePort : settings.mariadbPort
 
     try { await access(executable) } catch {
-      return this.update(id, { state: 'error', message: `${id === 'apache' ? 'Apache' : 'MySQL'} is not installed.` })
+      return this.update(id, { state: 'error', message: `${id === 'apache' ? 'Apache' : 'MariaDB'} is not installed.` })
     }
     if (settings.checkPortsBeforeStart) {
       const portState = await inspectPort(port)
@@ -100,7 +120,7 @@ export class ProcessManager {
       if (recent.length > 8) recent.splice(0, recent.length - 8)
       this.diagnostics.set(id, recent)
       const stopping = this.intentionalStops.has(id) || this.statuses.get(id)?.state === 'stopping'
-      this.logs.add(id, stopping ? 'info' : /error|fatal|failed|exception/i.test(output) ? 'error' : 'warn', output)
+      this.logs.add(id, classifyServiceOutput(output, stopping), output)
     })
     child.once('error', (error) => {
       this.logs.add(id, 'error', `${this.label(id)} could not start: ${error.message}`)
@@ -182,7 +202,7 @@ export class ProcessManager {
     return { id, name: this.label(id), state: 'stopped', pid: null, port, version: null, startedAt: null }
   }
 
-  private label(id: ServiceId): string { return id === 'apache' ? 'Apache' : 'MySQL' }
+  private label(id: ServiceId): string { return id === 'apache' ? 'Apache' : 'MariaDB' }
 
   private async handleExit(id: ServiceId, code: number | null, intentional: boolean, diagnostic: string): Promise<void> {
     const result = describeProcessExit(this.label(id), code, intentional, diagnostic)

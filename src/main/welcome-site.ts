@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises'
+import { access, readFile, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { RuntimeSettings } from '../shared/types'
 import { copyFileBestEffort, ensureDirectory, isBusyFileError, writeTextFile } from './safe-file'
@@ -77,7 +77,7 @@ async function copyManagedText(source: string | null, destination: string, manag
   await writeManagedFile(destination, content, managed)
 }
 
-export async function ensureWelcomeSite(htdocs: string, settings: Pick<RuntimeSettings, 'apachePort' | 'apacheSslPort' | 'mariadbPort' | 'mariadbPassword' | 'activePhpVersion'>): Promise<void> {
+export async function ensureWelcomeSite(htdocs: string, settings: Pick<RuntimeSettings, 'apachePort' | 'apacheSslPort' | 'mariadbPort' | 'mariadbPassword' | 'activePhpVersion' | 'phpProfile' | 'setupComplete'>): Promise<void> {
   const assets = join(htdocs, 'assets')
   await ensureDirectory(htdocs)
   await ensureDirectory(assets)
@@ -103,12 +103,14 @@ export async function ensureWelcomeSite(htdocs: string, settings: Pick<RuntimeSe
     fallbackStyles()
   )
   try {
-    await writeTextFile(join(assets, 'weebx-runtime.json'), `${JSON.stringify({
+    await rm(join(assets, 'weebx-runtime.json'), { force: true })
+    await writeTextFile(join(assets, '.weebx-runtime.json'), `${JSON.stringify({
       apachePort: settings.apachePort,
       apacheSslPort: settings.apacheSslPort,
       mariadbPort: settings.mariadbPort,
       phpVersion: settings.activePhpVersion,
-      passwordSet: Boolean(settings.mariadbPassword)
+      phpProfile: settings.phpProfile,
+      passwordSet: Boolean(settings.mariadbPassword) && settings.setupComplete
     }, null, 2)}\n`)
   } catch (error) {
     if (!isBusyFileError(error)) throw error
@@ -123,7 +125,7 @@ $version = PHP_VERSION;
 ?><!doctype html><html><head><meta charset="utf-8"><title>WeebX</title></head>
 <body><img src="assets/weebx-logo.png" alt="WeebX"><h1>WeebX is running</h1>
 <p>Apache + PHP <?= htmlspecialchars($version) ?></p>
-<p><a href="/phpmyadmin/">Open phpMyAdmin</a> · <a href="phpinfo.php">PHP info</a></p></body></html>
+<p>Production defaults are active. Replace this page with your website.</p></body></html>
 `
 }
 
@@ -131,7 +133,8 @@ function fallbackPhpInfoPage(): string {
   return `<?php
 declare(strict_types=1);
 // WEEBX_PHPINFO_PAGE
-phpinfo();
+http_response_code(404);
+exit('Not found.');
 `
 }
 

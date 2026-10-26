@@ -11,7 +11,7 @@ function isClosedDuringUninstall(text: string): boolean {
 
 export function UninstallApp() {
   const [apache, setApache] = useState(false)
-  const [mysql, setMysql] = useState(false)
+  const [mariadb, setMariaDb] = useState(false)
   const [otherWeebx, setOtherWeebx] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -24,7 +24,7 @@ export function UninstallApp() {
   const refresh = async () => {
     const status = await window.weebx.uninstallStatus()
     setApache(status.apache)
-    setMysql(status.mysql)
+    setMariaDb(status.mariadb)
     setOtherWeebx(status.weebx)
   }
 
@@ -43,9 +43,9 @@ export function UninstallApp() {
       setMessage(keepHtdocs ? 'Saving your websites, then stopping services and other WeebX windows...' : 'Stopping services and other WeebX windows...')
       const stopped = await window.weebx.uninstallStop()
       setApache(stopped.apache)
-      setMysql(stopped.mysql)
+      setMariaDb(stopped.mariadb)
       setOtherWeebx(stopped.weebx)
-      if (stopped.apache || stopped.mysql || stopped.weebx) throw new Error('A WeebX service or another WeebX window is still running. Close it and try again.')
+      if (stopped.apache || stopped.mariadb || stopped.weebx) throw new Error('A WeebX service or another WeebX window is still running. Close it and try again.')
       setMessage('Services stopped. Starting Windows Installer; this window will close last...')
       const result = await window.weebx.uninstall({ keepHtdocs })
       setMessage(result.savedTo
@@ -64,13 +64,13 @@ export function UninstallApp() {
   return <div className={`uninstall-shell${busy ? ' busy' : ''}`}>
     <div className="title-drag" />
     <img src={logoUrl} alt="WeebX" />
-    <span className="eyebrow">DEVELOPMENT TOOL</span>
+    <span className="eyebrow">HOSTING STACK MANAGER</span>
     <h1>{busy ? 'Uninstalling WeebX' : 'Uninstall WeebX'}</h1>
     <p>{message}</p>
     {busy ? <LoaderCircle className="spin uninstall-spinner" size={36} /> : <>
       <div className="uninstall-status">
         <div><Server size={16} /><span>Apache</span><b className={apache ? 'wait' : 'good'}>{apache ? 'Running' : 'Stopped'}</b></div>
-        <div><Database size={16} /><span>MySQL</span><b className={mysql ? 'wait' : 'good'}>{mysql ? 'Running' : 'Stopped'}</b></div>
+        <div><Database size={16} /><span>MariaDB</span><b className={mariadb ? 'wait' : 'good'}>{mariadb ? 'Running' : 'Stopped'}</b></div>
         <div><Power size={16} /><span>Other WeebX windows</span><b className={otherWeebx ? 'wait' : 'good'}>{otherWeebx ? 'Running' : 'None'}</b></div>
       </div>
       <label className="uninstall-confirm">Type <b>UNINSTALL</b> to confirm
@@ -80,13 +80,13 @@ export function UninstallApp() {
         <input type="checkbox" checked={keepHtdocs} onChange={(event) => setKeepHtdocs(event.target.checked)} />
         <span>
           <b>Keep my websites</b>
-          Copy htdocs to Documents\WeebX Sites (phpMyAdmin is skipped). AppData is always removed so the next install starts with an empty MySQL password.
+          Copy htdocs to Documents\WeebX Sites (phpMyAdmin is skipped). Saved settings are removed so the next install starts with first-run setup.
         </span>
       </label>
     </>}
     {error && <div className="alert"><CircleAlert size={18} /><span>{error}</span></div>}
     {!busy && <ActionButton className="primary" disabled={!confirmed} working={busy} icon={<Power size={16} />} label="Confirm uninstall" onClick={uninstall} />}
-    <p className="note">{keepHtdocs ? 'Sites are copied to Documents\\WeebX Sites, then Windows removes WeebX and the AppData runtime.' : 'Windows removes WeebX and the AppData runtime, including websites in htdocs.'}</p>
+    <p className="note">{keepHtdocs ? 'Sites are copied to Documents\\WeebX Sites, then Windows removes WeebX and its default C:\\WeebX runtime.' : 'Windows removes WeebX and its default C:\\WeebX runtime, including websites in htdocs.'}</p>
     <span className="version">Made by JadaDev - WeebX {WEEBX_VERSION}</span>
     <div className="uninstall-safe"><ShieldCheck size={14} /> Services and other WeebX windows close first; uninstaller closes last{keepHtdocs ? <><FolderOpen size={14} /> Sites kept</> : null}</div>
   </div>

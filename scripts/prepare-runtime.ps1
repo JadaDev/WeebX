@@ -2,6 +2,7 @@ param([switch]$Force)
 
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$appVersion = (Get-Content -LiteralPath (Join-Path $repo 'package.json') -Raw | ConvertFrom-Json).version
 $runtime = Join-Path $repo 'resources\runtime'
 $downloads = Join-Path $repo 'build\downloads'
 $stagingRoot = Join-Path $repo 'build\runtime-staging'
@@ -24,7 +25,7 @@ function Get-VerifiedArchive($Package) {
     $archive = Join-Path $downloads $Package.File
     if (-not (Test-Path -LiteralPath $archive)) {
         Write-Host "Downloading $($Package.Name) $($Package.Version)..." -ForegroundColor Cyan
-        $headers = @{ 'User-Agent' = 'Mozilla/5.0 WeebX/1.1' }
+        $headers = @{ 'User-Agent' = "Mozilla/5.0 WeebX/$appVersion" }
         if ($Package.Name -eq 'apache') { $headers['Referer'] = 'https://www.apachelounge.com/download/' }
         Invoke-WebRequest -UseBasicParsing -Uri $Package.Url -Headers $headers -OutFile $archive
     }

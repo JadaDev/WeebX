@@ -24,10 +24,19 @@ export function isInsideDirectory(parent: string, child: string): boolean {
   return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation)
 }
 
+export function isManagedRuntimeForRemoval(userData: string, runtimeRoot: string, systemDrive = process.env.SystemDrive || 'C:'): boolean {
+  const defaultRoot = resolve(`${systemDrive}\\`, 'WeebX')
+  return isInsideDirectory(userData, runtimeRoot) || normalize(resolve(runtimeRoot)) === normalize(defaultRoot)
+}
+
+export function isDefaultUserDataForRemoval(appData: string, userData: string): boolean {
+  return normalize(resolve(userData)) === normalize(resolve(appData, 'WeebX'))
+}
+
 export async function clearResetStateBeforeUninstall(userData: string, runtimeRoot: string): Promise<void> {
-  // Only remove a runtime owned by WeebX's user-data directory. A user may
-  // have deliberately pointed runtimeRoot at an external/shared directory.
-  if (isInsideDirectory(userData, runtimeRoot)) {
+  // Remove only a runtime in WeebX user data or the exact C:\WeebX default.
+  // A custom external/shared directory is deliberately preserved.
+  if (isManagedRuntimeForRemoval(userData, runtimeRoot)) {
     await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })
   }
   await rm(join(userData, 'weebx.json'), { force: true, maxRetries: 5, retryDelay: 250 })
@@ -71,17 +80,17 @@ async function listWindowsProcesses(): Promise<StackProcess[]> {
   }
 }
 
-export async function inspectStack(runtimeRoot?: string): Promise<{ apache: boolean; mysql: boolean; weebx: boolean; processes: StackProcess[] }> {
+export async function inspectStack(runtimeRoot?: string): Promise<{ apache: boolean; mariadb: boolean; weebx: boolean; processes: StackProcess[] }> {
   const processes = (await listWindowsProcesses()).filter((item) => shouldStopProcess(item, runtimeRoot))
   return {
     apache: processes.some((item) => item.name.toLowerCase() === 'httpd.exe'),
-    mysql: processes.some((item) => ['mariadbd.exe', 'mysqld.exe'].includes(item.name.toLowerCase())),
+    mariadb: processes.some((item) => ['mariadbd.exe', 'mysqld.exe'].includes(item.name.toLowerCase())),
     weebx: processes.some((item) => item.name.toLowerCase() === 'weebx.exe'),
     processes
   }
 }
 
-export async function stopStackProcesses(runtimeRoot?: string): Promise<{ apache: boolean; mysql: boolean; weebx: boolean; stopped: number }> {
+export async function stopStackProcesses(runtimeRoot?: string): Promise<{ apache: boolean; mariadb: boolean; weebx: boolean; stopped: number }> {
   const before = await inspectStack(runtimeRoot)
   for (const item of before.processes) {
     try { await execFileAsync('taskkill.exe', ['/PID', String(item.pid), '/T', '/F'], { windowsHide: true }) } catch { /* already gone */ }
@@ -90,7 +99,7 @@ export async function stopStackProcesses(runtimeRoot?: string): Promise<{ apache
   const after = await inspectStack(runtimeRoot)
   return {
     apache: after.apache,
-    mysql: after.mysql,
+    mariadb: after.mariadb,
     weebx: after.weebx,
     stopped: Math.max(0, before.processes.length - after.processes.length)
   }

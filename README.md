@@ -1,208 +1,216 @@
-# WeebX
+# WeebX 2.0.5
 
-WeebX is a local Apache, PHP and MySQL (MariaDB) control panel for Windows. You install it, open it, start the stack, and work. Sites live in `htdocs`. phpMyAdmin is already there.
+WeebX is a **Local Web Hosting Stack Manager for Windows**. It brings Apache, multiple PHP runtimes, MariaDB, phpMyAdmin, virtual hosts, configuration, permissions, logs, portability, and service recovery into one desktop control panel.
 
-It is meant as a XAMPP alternative: same job (Apache + PHP + MySQL on your machine), but with a proper desktop app, several PHP versions side by side, and an installer that does not wipe your sites when you update.
+WeebX is designed for both local development and real website hosting. Development is the default environment; a hardened **Live / Production** profile is always one click away.
 
-Current release: **1.1.29**  
-Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
+Website: [weebx.jadadev.com](https://weebx.jadadev.com/)  
+License: MIT
 
-## This is the complete application source
+## Included stack
 
-This repository contains the auditable TypeScript, React and Electron source
-for WeebX, its tests, preload bridge, main-process service management, website,
-runtime preparation scripts and Windows build configuration.
-
-Electron itself is not committed to Git. Running `npm ci` downloads the exact
-Electron and JavaScript dependency versions recorded in `package-lock.json`.
-The large Apache, PHP, MariaDB and phpMyAdmin binary archives are also excluded;
-`npm run prepare:runtime` downloads their pinned upstream releases and verifies
-their SHA-256 hashes before extraction. Compiled output, installers, databases,
-download statistics and user websites are never part of the source repository.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development instructions,
-[SECURITY.md](SECURITY.md) for private vulnerability reporting, and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licensing.
-
-## What's new in 1.1.29
-
-- Optional automatic crash recovery for Apache and MySQL
-- Per-service dashboard switches that can be changed while a service is running or stopped
-- Recovery delay choices: 5 seconds, 10 seconds, 30 seconds, 1 minute, or 5 minutes
-- Intentional stops and restarts are logged as information instead of false exit-code errors
-- Genuine crashes retain detailed Apache or MariaDB diagnostic output
-- Redesigned scrolling for the PHP and Apache module containers
-- Redesigned download website with policy consent, live download counts, metadata, loading animation, and cache-busted assets
-- Reliable first-run preparation that creates the complete runtime folder tree before parallel copying begins
-
-Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
-
-## Screenshot
-
-![WeebX screenshot](docs/screenshot.png)
-
-## Video
-
-### WeebX Walkthrough
-
-Watch WeebX in action! See how to manage Apache, MariaDB (MySQL), PHP, virtual hosts, and more.
-
-https://github.com/user-attachments/assets/a8205b58-199b-413c-bf54-ad81d04361f0
-## Stack
-
-| Piece | Version |
+| Component | Included version |
 | --- | --- |
-| Apache | 2.4.69 |
-| MariaDB (shown in the app as MySQL) | 12.3.3 |
+| Apache HTTP Server | 2.4.69 |
+| PHP x64 NTS | 8.2.35, 8.3.36, 8.4.27, 8.5.12 |
+| MariaDB Server | 12.3.3 |
 | phpMyAdmin | 5.2.3 |
-| PHP (x64 NTS, all bundled) | 8.2.35, 8.3.36, 8.4.27, 8.5.12 |
 
-The runtime is copied into `%AppData%\weebx` on first launch. The installed `WeebX.exe` stays in Program Files. Updating the MSI is not supposed to delete MariaDB data or your websites.
+MariaDB is the community-developed, open-source fork of MySQL used by WeebX. It is compatible with the MySQL protocol and PHP drivers, but the product and user interface call the database by its accurate name: **MariaDB**.
 
-Windows 10 / 11, x64. You will also need the usual Visual C++ x64 runtime that Apache and PHP already expect.
+## Installation
 
-## What you can do
+WeebX supports Windows 10 and Windows 11 x64.
 
-### Dashboard
+1. Run `WeebX-Installer-x64.msi`.
+2. Open WeebX and let it prepare the bundled runtime.
+3. Complete first-run MariaDB setup:
+   - keep the generated strong password;
+   - use **Regenerate** whenever you want a different strong password;
+   - enter a password of your own; or
+   - explicitly choose an empty password for local development.
+4. Start Apache and MariaDB from the dashboard.
 
-- Start / stop Apache and MySQL, or start all / stop all
-- See if they are actually running, including uptime
-- Scan HTTP, HTTPS and MySQL ports and who owns them
-- Open the local site and phpMyAdmin
-- Recent activity from the stack
-- Turn automatic crash recovery on or off independently for Apache and MySQL
+The hosting runtime is installed to `C:\WeebX` by default. This keeps the familiar, predictable layout used by traditional Windows stack packages:
+
+```text
+C:\WeebX\
+├─ apache\
+├─ php\
+│  ├─ 8.2.35\
+│  ├─ 8.3.36\
+│  ├─ 8.4.27\
+│  └─ 8.5.12\
+├─ mariadb\
+│  └─ data\
+├─ htdocs\
+├─ certificates\
+├─ logs\
+└─ tmp\
+```
+
+Existing installations keep their configured runtime path. Settings can relocate or repair paths after the folder is moved.
+
+## Environment profiles
+
+### Development — default
+
+- PHP errors are visible for debugging and also logged.
+- PHP configuration changes are picked up immediately.
+- The bundled `phpinfo()` diagnostics page is available only from the local machine.
+- The welcome page exposes no credentials, environment variables, or private absolute paths.
+- The dashboard reminds the operator to switch profiles before public exposure.
+
+### Live / Production
+
+- Displayed PHP errors and startup errors are disabled.
+- Errors continue to be written to the protected PHP error log.
+- `expose_php` is disabled.
+- Exception arguments are hidden.
+- Assertions are disabled and OPcache uses production behavior.
+- Secure session settings are applied, including HTTPS-only session cookies.
+- Detailed PHP diagnostics are unavailable.
+
+## MariaDB password policy
+
+WeebX allows flexibility during development without hiding the risk from the user.
+
+| Password state | Development | Live / Production |
+| --- | --- | --- |
+| Empty | Warning | Critical warning |
+| Weak | Warning | High-priority warning |
+| Strong | Secure status | Secure status |
+
+A strong password has at least 12 characters and includes uppercase, lowercase, a number, and a symbol. First-run setup and Settings can generate or regenerate a cryptographically random 24-character password. Empty and weak passwords remain allowed, but a compact dashboard notice stays visible until the password is strong. Non-empty credentials are encrypted with the current Windows account and are never written into phpMyAdmin configuration. Settings can reveal the saved password after an explicit local confirmation; it is decrypted only on demand, automatically hidden after 30 seconds or when WeebX loses focus, and is not included in normal dashboard snapshots.
+
+MariaDB listens on `127.0.0.1` by default, `LOCAL INFILE` is disabled, anonymous accounts and the test database are removed during setup, and the root account is limited to local host identities. phpMyAdmin uses cookie authentication and is restricted to local requests. Passwordless phpMyAdmin login is enabled only when the operator explicitly chose an empty MariaDB password.
+
+## Features
+
+### Dashboard and service control
+
+- Start, stop, or restart Apache and MariaDB independently.
+- Start or stop the complete stack with one action.
+- See service state, PID, port, uptime, and crash-recovery configuration.
+- Inspect port ownership and recent activity.
+- Open `htdocs`, the active website, or local-only phpMyAdmin.
+- Use the live service nucleus: quiet with no orbit at 0, one multi-node glowing path at 1, and two independently animated paths with smooth, staggered service particles when both services are running. Reduced-motion preferences are respected.
+- Receive environment-aware password and Development-mode security notices.
+- Keep the Development security notice icon and message vertically aligned at every window size.
+- Refresh Apache security defaults without losing the configured `DocumentRoot`, `.htaccess` support, or the explicit website access grant.
+- Finish first-run runtime preparation reliably even when Windows security software temporarily locks a new file; WeebX retries recoverable writes until they succeed or the operator cancels.
+- Repair runtime access automatically if an older permission pass left files unreadable, while showing the active recovery step instead of leaving preparation at `0 / 0`.
+
+### PHP version management
+
+- Switch instantly among installed PHP versions; Apache restarts automatically when needed.
+- Keep a separate `php.ini` and extension set for every version.
+- Search and toggle PHP extensions and Apache modules.
+- Tune memory, uploads, post size, execution time, input time, file count, and input variables.
+- Discover current releases from PHP's official Windows release metadata.
+- Automatically select the correct Windows **x64 NTS** build used by WeebX's CGI integration.
+- Verify every automatic PHP download against PHP's published SHA-256 checksum before extraction.
+- Import a manual PHP ZIP through the Advanced flow. WeebX rejects path traversal and excessive expanded contents, then validates PHP 8.2+, 64-bit architecture, Non-Thread-Safe mode, `php-cgi.exe`, and the extension folder before installation.
+- Only enable managed extensions whose DLLs exist in the selected build.
+
+For a manual import, download the x64 **Non Thread Safe (NTS)** ZIP from the official Windows PHP page. Do not choose the source, debug, development, x86, or Thread Safe package. Keep the file zipped, select it in **PHP versions → Add PHP version → Manual / advanced**, then activate it after validation. Manual validation executes the selected `php.exe`, so never import an archive you do not trust.
 
 ### Virtual hosts
 
-- Create a site from a project name (that becomes the folder under `htdocs`)
-- HTTP and HTTPS, with a self-signed cert from Apache's `openssl`
-- Optional Windows hosts mapping (`127.0.0.1`) if you run WeebX as administrator
-- Enable / disable a site without deleting the folder
-- Help for pointing a real domain at a machine / VPS IP
+- Create a project folder and hostname from one form.
+- Add aliases, HTTP, and optional HTTPS.
+- Generate self-signed development certificates.
+- Add local Windows hosts-file mappings when WeebX is elevated.
+- Enable or disable a host without deleting its files.
+- Preserve custom configuration outside WeebX-managed markers.
 
-Deleting a vhost in WeebX does not delete the files on disk.
+Self-signed certificates are for local testing. Public websites require a certificate trusted by browsers.
 
-### PHP versions
+### Windows file permissions
 
-- Switch the PHP Apache is using (Apache restarts)
-- Development vs production `php.ini` profile
-- Enable / disable PHP extensions
-- Enable / disable Apache modules
-- Change the usual limits: post max size, upload size, memory, max execution time, max input time, max input vars, max file uploads
-- **Save and restart Apache** after module or limit changes
+Settings provides guided NTFS presets for `htdocs`, MariaDB data, or the complete runtime:
 
-### Configuration
+- **Private:** current Windows user, SYSTEM, and administrators only. Recommended for database data and live sites.
+- **Owner writable:** inherits Windows permissions and grants the current owner Modify access. Convenient during development.
+- **Windows defaults:** resets the selected tree to inherited Windows ACLs.
 
-Edit and save:
+WeebX briefly stops affected services, applies the selected permissions with the native Windows ACL system, and restarts the services. Private permissions are applied to the root and safely inherited by every descendant, keeping files readable by the owner instead of creating inherit-only file entries. Advanced users can open the target folder and use Windows Security properties for a dedicated service account or custom group policy.
 
-- `php.ini`
-- `httpd.conf`
-- `httpd-vhosts.conf`
-- `my.ini`
+NTFS permissions protect files from other Windows accounts; they do not sandbox unsafe PHP code running as the same account. Applications must still validate uploads, keep secrets outside public folders, and follow their framework's production guidance.
 
-Validate Apache / PHP / MariaDB config from the same screen. Saves keep a `.weebx.bak` next to the file.
+### Configuration, logs, and recovery
 
-### Logs
+- Edit `php.ini`, `httpd.conf`, `httpd-vhosts.conf`, and `my.ini`.
+- Validate Apache, PHP, and MariaDB configuration before relying on it.
+- Review categorized Apache, MariaDB, and system logs.
+- Preserve MariaDB's own Note, Warning, and Error severity instead of treating every stderr line containing words such as `failed` as an error.
+- Configure independent Apache and MariaDB crash recovery with selectable delays.
+- Detect occupied HTTP, HTTPS, and MariaDB ports.
+- Start WeebX with Windows and optionally start the stack when the panel opens.
 
-Apache, MySQL and WeebX messages in one list, with a filter.
-Intentional stops and restarts stay informational. Unexpected exits are errors and include the available process diagnostics and scheduled recovery delay.
+### Portability and data safety
 
-### Portal packing
+- Pack Apache, PHP, configuration, virtual hosts, websites, and optional MariaDB data into a WeebX Portal.
+- Unpack a Portal on another disk or machine and rebase its paths.
+- Repair paths after moving an installation.
+- Preserve websites during uninstall by copying them to `Documents\WeebX Sites`.
+- Preserve websites and MariaDB data during normal component updates.
+- Never export the saved MariaDB credential in a Portal; the destination returns to first-run setup.
 
-Pack the whole thing into a folder you can copy to another disk or PC:
+## Security defaults
 
-- App + Apache + PHP + MariaDB
-- Optional: include the database
-- Optional: include `htdocs` (phpMyAdmin stays either way)
+- The Electron renderer uses sandboxing, context isolation, no Node.js integration, a restrictive Content Security Policy, denied permission requests, and a narrow IPC bridge.
+- Component downloads use HTTPS allowlists, validate redirects, enforce size limits, and require SHA-256 checksums.
+- Apache denies filesystem access by default, disables directory indexes and TRACE, blocks dotfiles and common secret/config/backup extensions, limits request timeouts, and reduces version disclosure.
+- MariaDB and phpMyAdmin remain loopback-only by default.
+- MariaDB's optional feedback plugin is explicitly disabled.
+- phpMyAdmin uses cookie authentication with no stored database password and a short login-cookie lifetime.
+- PHP diagnostics are local-only and redact private paths; environment variables are never printed.
+- Session upload progress is disabled in both profiles, following PHP's current defense-in-depth guidance for the bundled October 2026 security releases.
+- The bundled public welcome page contains no credentials, database errors, private paths, or detailed server versions in Live / Production.
+- New runtime files receive the Private NTFS preset automatically when Windows permits it.
 
-Unpack on the other machine and launch. WeebX rebases paths so Apache and MySQL still start. There is also `setup_weebx.bat` next to `WeebX.exe` for a portable `data` folder.
+These controls provide a hardened platform baseline; they cannot make arbitrary website code fully secure.
 
-### Settings
+## Before hosting a public website
 
-- Runtime directory and document root
-- Relocation repair if you copied or moved the folder (**Fix automatically** or pick the folder)
-- HTTP / HTTPS / MySQL ports. MySQL has its own **Update** button: writes `my.ini` and restarts MySQL if it is running; if it is stopped it only changes the port
-- MySQL root login (host `127.0.0.1` / `localhost`, user `root`)
-- Change / force-reset the root password. If you forgot the old one, type a new one. If a password is set, an eye icon shows or hides it
-- Start Apache and MySQL when WeebX opens
-- Start WeebX with Windows
-- Keep running in the tray
-- Check port ownership before start
-- Choose the automatic-restart delay: 5 seconds, 10 seconds, 30 seconds, 1 minute, or 5 minutes
-- Administrator vs standard (hosts file needs admin)
+1. Switch PHP to **Live / Production**.
+2. Resolve every password warning and create a separate least-privilege MariaDB user for each site. Do not use `root` in application code.
+3. Install a trusted TLS certificate and redirect public HTTP traffic to HTTPS.
+4. Allow only required inbound ports in Windows Firewall and the provider firewall. Never expose MariaDB port 3306 publicly.
+5. Keep phpMyAdmin local-only; use the server console, a VPN, or an SSH tunnel for administration.
+6. Patch Windows, WeebX, Apache, PHP, MariaDB, phpMyAdmin, frameworks, plugins, and application dependencies promptly.
+7. Store secrets outside `htdocs`, restrict uploads, disable script execution in upload folders, and validate every uploaded file.
+8. Maintain tested, encrypted, off-machine backups of websites, databases, certificates, and configuration.
+9. Add monitoring, log rotation, rate limiting, and a reverse proxy or edge security service appropriate to the expected traffic.
+10. Run the public host under a dedicated non-administrator Windows account where practical.
 
-### Tray
+## Build from source
 
-- Open WeebX
-- Start / stop Apache and MySQL
-- Switch PHP version
-- Uninstall
-- Quit
-
-### Uninstall
-
-From the tray or from Apps. You type `UNINSTALL` to confirm. Apache and MySQL are stopped first. You can keep websites: they are copied to `Documents\WeebX Sites` (phpMyAdmin is skipped), then the program and AppData runtime are removed.
-
-## Install
-
-1. Run `WeebX-Installer-x64.msi`
-2. Open WeebX
-3. Wait for first-run copy of Apache / PHP / MariaDB (progress and time left are shown)
-4. Start the stack
-
-Default ports: HTTP 80, HTTPS 443, MySQL 3306. Root has no password until you set one.
-
-The public download page lives in `website/WeebX`. Copy that folder into Apache `htdocs`, then drop `WeebX-Installer-x64.msi` and `WeebX.zip` into `htdocs/WeebX/Files`. The page picks them up on its own.
-
-## Build it yourself
-
-Node.js 22+, Windows x64. Electron does not need to be installed globally.
+Requirements: Node.js 22+ and Windows x64.
 
 ```powershell
-npm ci
+npm install
 npm run typecheck
 npm test
-npm run dev
+npm run build
 ```
 
-Download and verify the pinned runtime, then build the MSI:
+Prepare the offline stack and build the installer:
 
 ```powershell
 npm run prepare:runtime
 npm run dist:msi
 ```
 
-Installer ends up at `release\WeebX\WeebX-Installer-x64.msi`.
+Release artifacts are assembled in `release\WeebX`. Third-party packages come from the official PHP for Windows, Apache Lounge, MariaDB, and phpMyAdmin distribution channels and are verified with pinned SHA-256 hashes.
 
-Runtime on disk looks like this:
+The locally assembled 2.0.5 executable and MSI are not Authenticode-signed. Before distributing WeebX as a trusted public download, configure a Windows code-signing certificate in the release pipeline, sign the application and installer, timestamp the signatures, and verify them on a clean Windows machine.
 
-```text
-runtime/
-├── apache/
-├── certificates/
-├── htdocs/
-│   └── phpmyadmin/
-├── mariadb/
-│   └── data/
-└── php/
-    ├── 8.2.35/
-    ├── 8.3.36/
-    ├── 8.4.27/
-    └── 8.5.12/
-```
+The public website is in `website\WeebX`. Release files belong in `website\WeebX\Files`; direct access to that directory is denied and downloads pass through the validated endpoint.
 
-Binaries come from the usual places: [PHP for Windows](https://windows.php.net/), [Apache Lounge](https://www.apachelounge.com/download/), [MariaDB](https://mariadb.org/download/), [phpMyAdmin](https://www.phpmyadmin.net/downloads/).
+## License and responsibility
 
-This is a local development stack. Do not put it on the public internet.
+WeebX is released under the MIT License. Apache, PHP, MariaDB, phpMyAdmin, Windows, XAMPP, and other names belong to their respective owners and follow their own licenses. WeebX is independent from Apache Friends and the XAMPP project.
 
-## How this was built
-
-WeebX is made by **JadaDev**.
-
-The project was started with **Codex 5.6 Sol High**. The rest was built in **Cursor** with agents: **Claude** and **ChatGPT**. Most of the design came from Claude. Fixes, tests, and the long stretch of “this broke, fix it” also went through those agents, with JadaDev directing what the app should actually do.
-
-Stack on the app side: Electron 45, electron-vite, React 19, TypeScript.
-
-## License
-
-MIT. See `LICENSE`.
+The operator remains responsible for DNS, trusted TLS, firewall rules, operating-system security, application vulnerabilities, backups, monitoring, abuse prevention, privacy, and incident response.

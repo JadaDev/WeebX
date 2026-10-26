@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeImage, session, shell, Tray } from 'electron'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { electronApp, is } from '@electron-toolkit/utils'
@@ -13,6 +13,7 @@ import { registerIpc } from './ipc'
 import { RuntimeSeeder } from './runtime-seeder'
 import { RelocationManager } from './relocation-manager'
 import { pointUninstallToApp } from './stack-shutdown'
+import { applyPermissionPreset } from './permissions'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -107,6 +108,10 @@ async function createWindow(): Promise<void> {
     if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowed = !app.isPackaged && process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL)
+    if (!allowed && !url.startsWith('file:')) event.preventDefault()
+  })
   mainWindow.webContents.on('did-finish-load', () => {
     if (!preparing || !windowAlive()) return
     const boot = JSON.stringify({ logoDataUrl: logoDataUrl() })
@@ -158,6 +163,14 @@ async function createWindow(): Promise<void> {
       await configs.save('mariadb', configs.mariaDbTemplate(settings))
       await configs.save('vhosts', configs.vhostExample(settings))
       await configs.applyPhpProfile(settings.activePhpVersion, settings.phpProfile)
+      if (process.platform === 'win32') {
+        try {
+          const secured = await applyPermissionPreset(settings, 'runtime', 'private')
+          logs.add('system', 'info', secured.message)
+        } catch (error) {
+          logs.add('system', 'warn', `Automatic NTFS hardening needs attention: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
     }
     await relocation.writeCurrentStamp()
     if (preparationController.signal.aborted) throw cancelledError()
@@ -204,18 +217,18 @@ async function createTray(): Promise<void> {
 async function refreshTray(): Promise<void> {
   if (!tray || !processes) return
   const apache = processes.status('apache')
-  const mysql = processes.status('mariadb')
+  const mariadb = processes.status('mariadb')
   const phpVersions = installer ? (await installer.phpVersions()).filter((item) => item.installed) : []
   const apacheRunning = apache.state === 'running' || apache.state === 'starting'
-  const mysqlRunning = mysql.state === 'running' || mysql.state === 'starting'
+  const mariadbRunning = mariadb.state === 'running' || mariadb.state === 'starting'
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open WeebX', click: () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus() } } },
     { type: 'separator' },
     { label: apacheRunning ? 'Stop Apache' : 'Start Apache', click: () => void processes?.[apacheRunning ? 'stop' : 'start']('apache') },
-    { label: mysqlRunning ? 'Stop MySQL' : 'Start MySQL', click: () => void processes?.[mysqlRunning ? 'stop' : 'start']('mariadb') },
+    { label: mariadbRunning ? 'Stop MariaDB' : 'Start MariaDB', click: () => void processes?.[mariadbRunning ? 'stop' : 'start']('mariadb') },
     { type: 'separator' },
-    { label: 'Start all', enabled: !(apacheRunning && mysqlRunning), click: () => void Promise.all((['apache', 'mariadb'] as ServiceId[]).map((id) => processes?.start(id))) },
-    { label: 'Stop all', enabled: apacheRunning || mysqlRunning, click: () => void processes?.stopAll() },
+    { label: 'Start all', enabled: !(apacheRunning && mariadbRunning), click: () => void Promise.all((['apache', 'mariadb'] as ServiceId[]).map((id) => processes?.start(id))) },
+    { label: 'Stop all', enabled: apacheRunning || mariadbRunning, click: () => void processes?.stopAll() },
     { type: 'separator' },
     {
       label: 'PHP version',
@@ -242,6 +255,8 @@ async function selectPhpFromTray(version: string): Promise<void> {
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.jadadev.weebx')
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  session.defaultSession.setPermissionCheckHandler(() => false)
   if (wantsUninstall()) await createUninstallWindow()
   else await createWindow()
   app.on('activate', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show() })
@@ -333,6 +348,10 @@ async function createUninstallWindow(): Promise<void> {
   })
   mainWindow.on('close', () => { quitting = true })
   mainWindow.webContents.on('did-finish-load', () => { if (mainWindow && !mainWindow.isDestroyed()) markUninstallPage(mainWindow) })
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowed = !app.isPackaged && process.env.ELECTRON_RENDERER_URL && url.startsWith(process.env.ELECTRON_RENDERER_URL)
+    if (!allowed && !url.startsWith('file:')) event.preventDefault()
+  })
   const store = new JsonStore(join(app.getPath('userData'), 'weebx.json'))
   const logs = new LogBuffer()
   const configs = new ConfigManager(() => store.getSettings())

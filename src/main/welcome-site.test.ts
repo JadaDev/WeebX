@@ -18,7 +18,7 @@ describe('welcome site', () => {
     await writeFile(join(folder, 'index.php'), '<?php\n$version = PHP_VERSION;\n?><h1>WeebX is running</h1>', 'utf8')
     await writeFile(join(custom, 'index.php'), '<?php echo "my project";', 'utf8')
 
-    const settings = { apachePort: 80, apacheSslPort: 443, mariadbPort: 3306, mariadbPassword: '', activePhpVersion: '8.5.12' }
+    const settings = { apachePort: 80, apacheSslPort: 443, mariadbPort: 3306, mariadbPassword: 'Strong!Password123', activePhpVersion: '8.5.12', phpProfile: 'production' as const, setupComplete: true }
     await ensureWelcomeSite(folder, settings)
     await ensureWelcomeSite(custom, settings)
 
@@ -27,7 +27,10 @@ describe('welcome site', () => {
     expect(upgraded).toContain('phpmyadmin')
     expect(upgraded).toContain('phpinfo.php')
     expect(await readFile(join(folder, 'phpinfo.php'), 'utf8')).toContain('WEEBX_PHPINFO_PAGE')
-    expect(JSON.parse(await readFile(join(folder, 'assets', 'weebx-runtime.json'), 'utf8')).mariadbPort).toBe(3306)
+    const runtime = JSON.parse(await readFile(join(folder, 'assets', '.weebx-runtime.json'), 'utf8'))
+    expect(runtime.mariadbPort).toBe(3306)
+    expect(runtime.passwordSet).toBe(true)
+    expect(runtime.phpProfile).toBe('production')
     expect(await readFile(join(custom, 'index.php'), 'utf8')).toBe('<?php echo "my project";')
   })
 
@@ -36,6 +39,6 @@ describe('welcome site', () => {
     await mkdir(join(folder, 'assets'), { recursive: true })
     await writeFile(join(folder, 'assets', 'weebx-logo.png'), 'existing-logo')
     await writeFile(join(folder, 'index.php'), '<?php echo "my project";', 'utf8')
-    await expect(ensureWelcomeSite(folder, { apachePort: 80, apacheSslPort: 443, mariadbPort: 3306, mariadbPassword: '', activePhpVersion: '8.5.12' })).resolves.toBeUndefined()
+    await expect(ensureWelcomeSite(folder, { apachePort: 80, apacheSslPort: 443, mariadbPort: 3306, mariadbPassword: 'Strong!Password123', activePhpVersion: '8.5.12', phpProfile: 'production', setupComplete: true })).resolves.toBeUndefined()
   })
 })

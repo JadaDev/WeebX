@@ -1,8 +1,9 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
-import { access } from 'node:fs/promises'
+import { access, chmod, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RuntimeSettings } from '../shared/types'
+import { assertPasswordInput } from './security'
 
 const execFileAsync = promisify(execFile)
 
@@ -15,31 +16,29 @@ export function phpSingleQuoted(value: string): string {
 }
 
 export function assertMariaDbPassword(value: string): string {
-  if (value.includes('\0')) throw new Error('Password cannot contain null characters.')
-  if (value.length > 128) throw new Error('Password is too long.')
-  return value
+  return assertPasswordInput(value)
 }
 
 export function mariaDbPasswordError(raw: string, running: boolean): string {
-  if (!running) return 'Start MySQL first, then change the password.'
+  if (!running) return 'Start MariaDB first, then change the password.'
   const text = raw.replace(/\s+/g, ' ')
   if (/Command failed:|mariadb\.exe/i.test(text) && !/access denied|can't connect|refused|timed out/i.test(text)) {
-    return 'Could not change the MySQL password.'
+    return 'Could not change the MariaDB password.'
   }
   if (/can'?t connect|refused|timed out|gone away|unknown mysql server|not allowed to connect/i.test(text)) {
-    return 'Start MySQL first, then change the password.'
+    return 'Start MariaDB first, then change the password.'
   }
   if (/access denied/i.test(text)) {
-    return 'Could not force-reset the MySQL root password. Start MySQL and try again.'
+    return 'Could not force-reset the MariaDB root password. Start MariaDB and try again.'
   }
-  return 'Could not change the MySQL password.'
+  return 'Could not change the MariaDB password.'
 }
 
 export function isIgnorableMariaDbUserError(raw: string): boolean {
   return /1396|1133|operation ALTER USER failed|operation CREATE USER failed|unknown user|unknown table|unknown column|doesn't exist|invalid json|json_set/i.test(raw)
 }
 
-const ROOT_HOSTS = ['127.0.0.1', 'localhost', '%', '::1'] as const
+const ROOT_HOSTS = ['127.0.0.1', 'localhost', '::1'] as const
 
 export function passwordCandidates(...values: Array<string | undefined>): string[] {
   const seen = new Set<string>()
@@ -52,7 +51,7 @@ export function passwordCandidates(...values: Array<string | undefined>): string
   return result
 }
 
-export function clientArgs(settings: RuntimeSettings, extra: string[], host = '127.0.0.1', password = settings.mariadbPassword): string[] {
+export function clientArgs(settings: RuntimeSettings, extra: string[], host = '127.0.0.1'): string[] {
   return [
     '-u', 'root',
     '-h', host,
@@ -60,9 +59,51 @@ export function clientArgs(settings: RuntimeSettings, extra: string[], host = '1
     '--protocol=tcp',
     '--connect-timeout=5',
     '--ssl=0',
-    `--password=${password}`,
     ...extra
   ]
+}
+
+function optionFileValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')
+}
+
+export async function runMariaDbClient(
+  settings: RuntimeSettings,
+  extra: string[],
+  host = '127.0.0.1',
+  password = settings.mariadbPassword,
+  clientPath = join(settings.runtimeRoot, 'mariadb', 'bin', 'mariadb.exe'),
+  timeout = 12000
+): Promise<void> {
+  const authDirectory = join(settings.runtimeRoot, 'tmp', 'client-auth')
+  await mkdir(authDirectory, { recursive: true, mode: 0o700 })
+  const authFile = join(authDirectory, `${crypto.randomUUID()}.ini`)
+  await writeFile(authFile, `[client]\npassword="${optionFileValue(password)}"\n`, { encoding: 'utf8', mode: 0o600 })
+  await chmod(authFile, 0o600).catch(() => undefined)
+  try {
+    const executeIndex = extra.indexOf('-e')
+    const stdin = executeIndex >= 0 ? String(extra[executeIndex + 1] ?? '') : ''
+    const safeExtra = executeIndex >= 0 ? extra.filter((_value, index) => index !== executeIndex && index !== executeIndex + 1) : extra
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(clientPath, [`--defaults-extra-file=${authFile}`, ...clientArgs(settings, safeExtra, host)], { windowsHide: true, stdio: 'pipe' })
+      let output = ''
+      const timer = setTimeout(() => {
+        child.kill()
+        reject(new Error('MariaDB client timed out.'))
+      }, timeout)
+      child.stdout.on('data', (data) => { output += data })
+      child.stderr.on('data', (data) => { output += data })
+      child.once('error', (error) => { clearTimeout(timer); reject(error) })
+      child.once('close', (code) => {
+        clearTimeout(timer)
+        code === 0 ? resolve() : reject(new Error(output.trim() || `MariaDB client exited with code ${code}.`))
+      })
+      if (stdin) child.stdin.end(`${stdin}\n`)
+      else child.stdin.end()
+    })
+  } finally {
+    await rm(authFile, { force: true }).catch(() => undefined)
+  }
 }
 
 export function rootPasswordStatements(password: string): string[] {
@@ -73,6 +114,9 @@ export function rootPasswordStatements(password: string): string[] {
     ...ROOT_HOSTS.map((host) => `CREATE USER IF NOT EXISTS 'root'@'${host}' IDENTIFIED BY '${escaped}'`),
     ...ROOT_HOSTS.map((host) => `ALTER USER 'root'@'${host}' IDENTIFIED BY '${escaped}'`),
     ...ROOT_HOSTS.map((host) => `GRANT ALL PRIVILEGES ON *.* TO 'root'@'${host}' WITH GRANT OPTION`),
+    "DROP USER IF EXISTS ''@'localhost'",
+    "DROP USER IF EXISTS ''@'%'",
+    'DROP DATABASE IF EXISTS test',
     `UPDATE mysql.global_priv SET priv=json_set(priv, '$.plugin', 'mysql_native_password', '$.authentication_string', ${hashSql}) WHERE User='root'`,
     'FLUSH PRIVILEGES'
   ]
@@ -89,7 +133,7 @@ export async function pingMariaDb(
 ): Promise<boolean> {
   for (const host of ['127.0.0.1', 'localhost']) {
     try {
-      await execFileAsync(clientPath, clientArgs(settings, ['-e', 'SELECT 1;'], host, password), { windowsHide: true, timeout: 5000 })
+      await runMariaDbClient(settings, ['-e', 'SELECT 1;'], host, password, clientPath, 5000)
       return true
     } catch { /* try the next host */ }
   }
@@ -133,9 +177,9 @@ export async function changeMariaDbPassword(
   for (const host of ['127.0.0.1', 'localhost']) {
     for (const current of passwordCandidates(currentPassword, settings.mariadbPassword, password, '')) {
       try {
-        await execFileAsync(clientPath, clientArgs(settings, ['-e', 'SELECT 1;'], host, current), { windowsHide: true, timeout: 12000 })
+        await runMariaDbClient(settings, ['-e', 'SELECT 1;'], host, current, clientPath)
         if (current === password) return
-        await execFileAsync(clientPath, clientArgs(settings, ['-f', '-e', sql], host, current), { windowsHide: true, timeout: 12000 })
+        await runMariaDbClient(settings, ['-f', '-e', sql], host, current, clientPath)
         return
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error)
@@ -168,10 +212,7 @@ export async function recoverMariaDbPassword(
     // FLUSH PRIVILEGES turns grant checking back on. Keep it and every account
     // update in the same authenticated recovery session; a second client
     // connection would immediately be rejected by the old password.
-    await execFileAsync(clientPath, clientArgs(settings, ['-e', rootPasswordSql(password)], '127.0.0.1', ''), {
-      windowsHide: true,
-      timeout: 30000
-    })
+    await runMariaDbClient(settings, ['-e', rootPasswordSql(password)], '127.0.0.1', '', clientPath, 30000)
   } catch (error) {
     throw new Error(mariaDbPasswordError(error instanceof Error ? error.message : String(error), true))
   } finally {
@@ -181,10 +222,10 @@ export async function recoverMariaDbPassword(
 }
 
 async function waitForRecoveryDaemon(clientPath: string, settings: RuntimeSettings): Promise<void> {
-  let lastError = 'MySQL recovery did not start.'
+  let lastError = 'MariaDB recovery did not start.'
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      await execFileAsync(clientPath, clientArgs(settings, ['-e', 'SELECT 1;'], '127.0.0.1', ''), { windowsHide: true, timeout: 4000 })
+      await runMariaDbClient(settings, ['-e', 'SELECT 1;'], '127.0.0.1', '', clientPath, 4000)
       return
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)

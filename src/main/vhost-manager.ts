@@ -1,5 +1,5 @@
 import { access, appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { VhostDraft, VirtualHost } from '../shared/types'
@@ -41,6 +41,10 @@ export class VhostManager {
     const existing = await this.store.getVhosts()
     if (existing.some((item) => item.serverName === serverName)) throw new Error(`${serverName} already exists.`)
     const documentRoot = resolve(draft.documentRoot || join(settings.htdocsRoot, name))
+    const documentRelative = relative(resolve(settings.htdocsRoot), documentRoot)
+    if (documentRelative.startsWith('..') || isAbsolute(documentRelative)) {
+      throw new Error('Virtual-host document roots must stay inside the configured htdocs folder.')
+    }
     await mkdir(documentRoot, { recursive: true })
     const indexFile = join(documentRoot, 'index.php')
     try { await access(indexFile) } catch {
@@ -98,7 +102,7 @@ export class VhostManager {
       ...(vhost.aliases.length ? [`    ServerAlias ${vhost.aliases.join(' ')}`] : []),
       `    DocumentRoot "${vhost.documentRoot.replace(/\\/g, '/')}"`,
       `    <Directory "${vhost.documentRoot.replace(/\\/g, '/')}">`,
-      '        Options Indexes FollowSymLinks',
+      '        Options -Indexes +FollowSymLinks',
       '        AllowOverride All',
       '        Require all granted',
       '    </Directory>'
