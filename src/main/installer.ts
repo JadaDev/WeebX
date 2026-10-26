@@ -361,6 +361,7 @@ export class Installer {
     const script = [
       '& { param($archive, $destination)',
       'Add-Type -AssemblyName System.IO.Compression.FileSystem;',
+      '[IO.Directory]::CreateDirectory($destination) | Out-Null;',
       '$root=[IO.Path]::GetFullPath($destination + [IO.Path]::DirectorySeparatorChar);',
       '$zip=[IO.Compression.ZipFile]::OpenRead($archive);',
       'try {',
@@ -369,11 +370,18 @@ export class Installer {
       'foreach($entry in $zip.Entries){',
       '$total += $entry.Length;',
       'if($total -gt 8GB){throw "Archive expands beyond the 8 GB safety limit."};',
-      '$target=[IO.Path]::GetFullPath([IO.Path]::Combine($destination,$entry.FullName));',
-      'if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw "Archive contains an unsafe path."}',
+      '$relative=$entry.FullName.Replace("/","\\");',
+      'if([string]::IsNullOrWhiteSpace($relative)){continue};',
+      '$target=[IO.Path]::GetFullPath([IO.Path]::Combine($destination,$relative));',
+      'if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw "Archive contains an unsafe path."};',
+      'if($relative.EndsWith("\\")){[IO.Directory]::CreateDirectory($target) | Out-Null; continue};',
+      '$folder=[IO.Path]::GetDirectoryName($target);',
+      'if($folder){[IO.Directory]::CreateDirectory($folder) | Out-Null};',
+      '$sourceStream=$entry.Open();',
+      'try { $output=[IO.File]::Create($target); try { $sourceStream.CopyTo($output) } finally { $output.Dispose() } }',
+      'finally { $sourceStream.Dispose() }',
       '}',
-      '} finally { $zip.Dispose() };',
-      'Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force',
+      '} finally { $zip.Dispose() }',
       '}'
     ].join(' ')
     return this.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script, archive, destination])
