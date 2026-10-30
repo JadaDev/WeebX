@@ -7,6 +7,7 @@ import type { LogBuffer } from './logs'
 import { inspectPort } from './ports'
 import { runtimePaths } from './paths'
 import type { ConfigManager } from './config-manager'
+import { isHarmlessMariaDbLine } from './mariadb-output'
 
 const execFileAsync = promisify(execFile)
 
@@ -28,6 +29,7 @@ export function classifyServiceOutput(output: string, stopping = false): 'info' 
   if (stopping) return 'info'
   let result: 'info' | 'warn' | 'error' = 'info'
   for (const line of output.split(/\r?\n/).filter(Boolean)) {
+    if (isHarmlessMariaDbLine(line)) continue
     const explicitError = /\[(?:error|fatal)\]|:(?:emerg|alert|crit|error)\]/i.test(line)
     const explicitWarning = /\[(?:warning|warn)\]|:warn\]/i.test(line)
     const explicitInformation = /\[(?:note|system|info|notice)\]|:(?:notice|info)\]/i.test(line)
@@ -100,6 +102,12 @@ export class ProcessManager {
     }
 
     if (id === 'apache') {
+      try {
+        await this.configs.ensureApacheRuntime()
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        return this.update(id, { state: 'error', message: `Apache log files are not writable. ${detail}` })
+      }
       const validation = await this.validate('apache')
       if (!validation.ok) return this.update(id, { state: 'error', message: validation.output })
     }

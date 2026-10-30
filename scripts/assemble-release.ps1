@@ -72,6 +72,9 @@ $filesDir = Join-Path $website 'WeebX\Files'
 New-Item -ItemType Directory -Path $filesDir -Force | Out-Null
 Copy-FileIfChanged -Source $msi.FullName -Destination (Join-Path $filesDir 'WeebX-Installer-x64.msi')
 Copy-FileIfChanged -Source $msi.FullName -Destination (Join-Path $release 'WeebX-Installer-x64.msi')
+$websiteFiles = Join-Path $repo 'website\WeebX\Files'
+New-Item -ItemType Directory -Path $websiteFiles -Force | Out-Null
+Copy-FileIfChanged -Source $msi.FullName -Destination (Join-Path $websiteFiles 'WeebX-Installer-x64.msi')
 $zip = Join-Path $release 'WeebX.zip'
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 Push-Location $releaseFull
@@ -82,6 +85,12 @@ try {
   Pop-Location
 }
 Copy-FileIfChanged -Source $zip -Destination (Join-Path $filesDir 'WeebX.zip')
+Copy-FileIfChanged -Source $zip -Destination (Join-Path $websiteFiles 'WeebX.zip')
+$checksums = @(
+  "$(Get-FileHash -LiteralPath $msi.FullName -Algorithm SHA256 | Select-Object -ExpandProperty Hash) *WeebX-Installer-x64.msi",
+  "$(Get-FileHash -LiteralPath $zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash) *WeebX.zip"
+)
+[System.IO.File]::WriteAllLines((Join-Path $release 'SHA256SUMS.txt'), $checksums, [System.Text.UTF8Encoding]::new($false))
 Copy-FileIfChanged -Source (Join-Path $repo 'README.md') -Destination (Join-Path $release 'README.md')
 Copy-FileIfChanged -Source (Join-Path $repo 'resources\setup_weebx.bat') -Destination (Join-Path $release 'setup_weebx.bat')
 Copy-FileIfChanged -Source (Join-Path $repo 'resources\uninstall_weebx.bat') -Destination (Join-Path $release 'Uninstall WeebX.bat')
@@ -89,3 +98,4 @@ Write-Host "Release $version assembled at $release" -ForegroundColor Green
 Write-Host "Installer: $(Join-Path $release 'WeebX-Installer-x64.msi')" -ForegroundColor Green
 Write-Host "Portable folder: $portable" -ForegroundColor Green
 Write-Host "Portable zip: $zip" -ForegroundColor Green
+Write-Host "Checksums: $(Join-Path $release 'SHA256SUMS.txt')" -ForegroundColor Green

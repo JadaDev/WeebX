@@ -3,7 +3,7 @@ import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { PhpProfile, RuntimeSettings } from '../shared/types'
 import { runtimePaths } from './paths'
-import { backupAndWrite, ensureDirectory } from './safe-file'
+import { backupAndWrite, ensureDirectory, ensureWritableFile } from './safe-file'
 import { ensureWelcomeSite } from './welcome-site'
 
 export function upsertIni(content: string, key: string, value: string): string {
@@ -76,12 +76,24 @@ export class ConfigManager {
     await ensureDirectory(paths.tmp)
     await ensureDirectory(paths.sessions)
     await ensureDirectory(paths.phpMyAdminTemp)
+    await this.ensureApacheRuntime()
+    await ensureWritableFile(join(paths.root, 'logs', 'php-error.log'))
     await writeIfMissing(paths.vhostsConf, this.vhostExample(settings))
     await writeIfMissing(paths.mariadbConf, this.mariaDbTemplate(settings))
     await this.ensureApacheSecurity()
     await ensureWelcomeSite(paths.htdocs, settings)
     await this.ensurePhpRuntime()
     await this.writePhpMyAdminConfig()
+  }
+
+  /** Repair mutable Apache state without touching any website or log data. */
+  async ensureApacheRuntime(): Promise<void> {
+    const paths = runtimePaths(await this.getSettings())
+    await ensureDirectory(join(paths.apache, 'logs'))
+    await Promise.all([
+      ensureWritableFile(join(paths.apache, 'logs', 'access.log')),
+      ensureWritableFile(join(paths.apache, 'logs', 'error.log'))
+    ])
   }
 
   async ensurePhpRuntime(): Promise<void> {
@@ -238,7 +250,7 @@ session.cookie_secure=${profile === 'production' ? '1' : '0'}
 sys_temp_dir="${slash(paths.tmp)}"
 upload_tmp_dir="${slash(paths.tmp)}"
 opcache.enable=1
-opcache.validate_timestamps=${profile === 'development' ? '1' : '0'}
+opcache.validate_timestamps=1
 opcache.revalidate_freq=${profile === 'development' ? '0' : '60'}
 ; END WEEBX MANAGED SETTINGS
 `
@@ -271,6 +283,9 @@ ErrorLog "logs/error.log"
 LogLevel warn
 CustomLog "logs/access.log" combined
 SSLSessionCache "shmcb:logs/ssl_scache(512000)"
+SSLProtocol -all +TLSv1.2 +TLSv1.3
+SSLCompression Off
+SSLSessionTickets Off
 TypesConfig conf/mime.types
 ScriptAlias /weebx-php/ "${slash(p.activePhp)}/"
 <Directory "${slash(p.activePhp)}">

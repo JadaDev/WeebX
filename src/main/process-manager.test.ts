@@ -25,8 +25,9 @@ describe('process exit classification', () => {
 })
 
 describe('service output classification', () => {
-  it('keeps an explicit MariaDB warning as a warning even when it says failed', () => {
-    expect(classifyServiceOutput('2026-10-26 3:29:44 0 [Warning] failed to retrieve the MAC address')).toBe('warn')
+  it('does not treat the Windows MariaDB MAC-address warning as a failure', () => {
+    expect(classifyServiceOutput('2026-10-26 3:29:44 0 [Warning] failed to retrieve the MAC address')).toBe('info')
+    expect(classifyServiceOutput('2026-10-26 3:29:44 0 [Warning] table cache is full')).toBe('warn')
   })
 
   it('recognizes MariaDB errors and informational startup notes', () => {

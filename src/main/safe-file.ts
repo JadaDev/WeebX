@@ -1,4 +1,4 @@
-import { access, chmod, copyFile, mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { access, chmod, copyFile, mkdir, open, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 async function exists(path: string): Promise<boolean> {
@@ -100,4 +100,16 @@ export async function ensureDirectory(path: string): Promise<void> {
     }
     throw error
   }
+}
+
+/**
+ * Runtime logs are copied out of an installed application whose payload can
+ * carry the Windows read-only attribute. Opening the file for append both
+ * creates a missing log and proves that the service will be able to use it.
+ */
+export async function ensureWritableFile(path: string): Promise<void> {
+  await ensureDirectory(dirname(path))
+  await clearReadonly(path)
+  const handle = await open(path, 'a', 0o600)
+  await handle.close()
 }

@@ -58,6 +58,11 @@ describe('isolated site profiles', () => {
     expect(ini).toContain('disable_functions=exec,passthru,shell_exec,system,proc_open,popen')
     expect(ini).toContain('user_ini.filename=')
     expect(ini).toContain('display_errors=Off')
+    expect(ini).toContain('cgi.force_redirect=1')
+    expect(ini).toContain('cgi.fix_pathinfo=0')
+    expect(ini).toContain('session.use_trans_sid=0')
+    expect(ini).toContain('zend.exception_ignore_args=On')
+    expect(ini).toContain('opcache.enable=1')
     expect(ini.match(/^extension=curl$/gm)).toHaveLength(1)
   })
 

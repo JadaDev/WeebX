@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { InstallProgress, InstallRequest, LogEntry, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, PreparationProgress, RuntimeSettings, RuntimeTuneSave, ServiceId, ServiceStatus, VhostDraft, VirtualHost, WeebXApi } from '../shared/types'
+import type { InstallProgress, InstallRequest, LogEntry, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, PreparationProgress, PreinstalledAppInstallRequest, PreinstalledAppProgress, PreinstalledAppUninstallOptions, RuntimeSettings, RuntimeTuneSave, ServiceId, ServiceStatus, VhostAccessDraft, VhostDraft, VirtualHost, WeebXApi } from '../shared/types'
 
 const uninstallListeners = new Set<() => void>()
 let uninstallRequested = process.argv.some((argument) => argument.includes('weebx-uninstall'))
@@ -36,16 +36,31 @@ const api: WeebXApi = {
     ipcRenderer.on('weebx:preparation', listener)
     return () => ipcRenderer.removeListener('weebx:preparation', listener)
   },
+  preinstalledAppCatalog: () => ipcRenderer.invoke('weebx:preinstalled-app-catalog'),
+  installedApps: () => ipcRenderer.invoke('weebx:preinstalled-apps'),
+  preflightPreinstalledApp: (request: PreinstalledAppInstallRequest) => ipcRenderer.invoke('weebx:preinstalled-app-preflight', request),
+  installPreinstalledApp: (request: PreinstalledAppInstallRequest) => ipcRenderer.invoke('weebx:preinstalled-app-install', request),
+  completePreinstalledAppSetup: (id: string) => ipcRenderer.invoke('weebx:preinstalled-app-complete', id),
+  uninstallPreinstalledApp: (id: string, options: PreinstalledAppUninstallOptions) => ipcRenderer.invoke('weebx:preinstalled-app-uninstall', id, options),
+  preinstalledAppActivity: (installId?: string) => ipcRenderer.invoke('weebx:preinstalled-app-activity', installId),
+  onPreinstalledAppProgress: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, progress: PreinstalledAppProgress) => callback(progress)
+    ipcRenderer.on('weebx:preinstalled-app-progress', listener)
+    return () => ipcRenderer.removeListener('weebx:preinstalled-app-progress', listener)
+  },
   readConfig: (kind) => ipcRenderer.invoke('weebx:config-read', kind),
   saveConfig: (kind, content) => ipcRenderer.invoke('weebx:config-save', kind, content),
   validateConfig: (kind) => ipcRenderer.invoke('weebx:config-validate', kind),
   listVhosts: () => ipcRenderer.invoke('weebx:vhosts'),
   createVhost: (draft: VhostDraft) => ipcRenderer.invoke('weebx:vhost-create', draft),
   updateVhostProfile: (id, isolation) => ipcRenderer.invoke('weebx:vhost-profile-update', id, isolation),
+  updateVhostAccess: (id, access: VhostAccessDraft) => ipcRenderer.invoke('weebx:vhost-access-update', id, access),
+  updateInstalledAppAccess: (id, access: VhostAccessDraft) => ipcRenderer.invoke('weebx:preinstalled-app-access', id, access),
   deleteVhost: (id: string) => ipcRenderer.invoke('weebx:vhost-delete', id),
   setVhostEnabled: (id: string, enabled: boolean): Promise<VirtualHost> => ipcRenderer.invoke('weebx:vhost-enable', id, enabled),
   siteProfileOptions: (version) => ipcRenderer.invoke('weebx:site-profile-options', version),
   revealSiteDatabasePassword: (id) => ipcRenderer.invoke('weebx:site-database-reveal', id),
+  revealInstalledAppConnection: (id) => ipcRenderer.invoke('weebx:preinstalled-app-connection', id),
   readSiteLog: (id, kind) => ipcRenderer.invoke('weebx:site-log-read', id, kind),
   selectPhp: (version: string) => ipcRenderer.invoke('weebx:php-select', version),
   setPhpProfile: (profile: PhpProfile) => ipcRenderer.invoke('weebx:php-profile', profile),
@@ -57,11 +72,12 @@ const api: WeebXApi = {
   repairLocation: (path?: string) => ipcRenderer.invoke('weebx:repair-location', path),
   openPath: (path: string) => ipcRenderer.invoke('weebx:open-path', path),
   openExternal: (url: string) => ipcRenderer.invoke('weebx:open-external', url),
-  chooseDirectory: () => ipcRenderer.invoke('weebx:choose-directory'),
+  chooseDirectory: (startPath?: string) => ipcRenderer.invoke('weebx:choose-directory', startPath),
   completeSecuritySetup: (password) => ipcRenderer.invoke('weebx:security-setup', password),
   changeMariaDbPassword: (password) => ipcRenderer.invoke('weebx:mariadb-password', password),
   revealMariaDbPassword: () => ipcRenderer.invoke('weebx:mariadb-password-reveal'),
   setPermissions: (target: PermissionTarget, preset: PermissionPreset) => ipcRenderer.invoke('weebx:permissions-set', target, preset),
+  restartAsAdministrator: () => ipcRenderer.invoke('weebx:restart-elevated'),
   isUninstall: uninstallRequested,
   onOpenUninstall: (callback) => {
     uninstallListeners.add(callback)

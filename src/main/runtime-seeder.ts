@@ -6,7 +6,8 @@ import type { PreparationProgress } from '../shared/types'
 import type { JsonStore } from './store'
 import type { LogBuffer } from './logs'
 import { runtimePaths } from './paths'
-import { copySpeed, estimateRemainingSeconds } from './preparation-progress'
+import { mariadbFailureOutput, mariadbProgressDetail } from './mariadb-output'
+import { copySpeed, databaseRemainingSeconds, estimateRemainingSeconds, smoothRemainingSeconds } from './preparation-progress'
 import { prepareRuntimeDirectories, retryFileOperation, type FileRetryEvent } from './runtime-copy'
 import { applyPrivateTreePermissions } from './permissions'
 
@@ -40,7 +41,16 @@ interface BundleManifest { version: string; phpVersions: string[] }
 interface RuntimeFile { source: string; destination: string; size: number; group: string; relativePath: string }
 interface SeedOptions { signal?: AbortSignal; onProgress?: (progress: PreparationProgress) => void }
 
-const MARIADB_SETUP_SECONDS = 150
+export function runtimeCriticalFiles(runtimeRoot: string, phpVersions: string[]): string[] {
+  return [
+    join(runtimeRoot, 'apache', 'bin', 'httpd.exe'),
+    join(runtimeRoot, 'mariadb', 'bin', 'mariadbd.exe'),
+    ...phpVersions.flatMap((version) => [
+      join(runtimeRoot, 'php', version, 'php.exe'),
+      join(runtimeRoot, 'php', version, 'php-cgi.exe')
+    ])
+  ]
+}
 
 export class RuntimeSeeder {
   constructor(private readonly store: JsonStore, private readonly logs: LogBuffer) {}
@@ -92,23 +102,50 @@ export class RuntimeSeeder {
     }
     checkAborted(signal)
     if (current === manifest.version) {
-      if (!(await exists(join(target.mariadbData, 'mysql'), signal))) {
-        onProgress(baseProgress({ phase: 'database', percent: 90, message: 'Initializing MariaDB', detail: 'This portal has no database yet.' }))
-        if (await this.initializeMariaDb(target.mariadb, target.mariadbData, signal, (detail) => {
-          onProgress(baseProgress({ phase: 'database', percent: 92, message: 'Initializing MariaDB', detail }))
-        })) {
-          if (settings.mariadbPassword || settings.setupComplete) await this.store.updateSettings({ mariadbPassword: '', setupComplete: false })
-          this.logs.add('system', 'warn', 'MariaDB system tables were initialized without a command-line password. Complete security setup before going live.')
+      const criticalFiles = runtimeCriticalFiles(target.root, manifest.phpVersions)
+      const missingCritical: string[] = []
+      for (const file of criticalFiles) if (!(await exists(file, signal))) missingCritical.push(relative(target.root, file))
+      if (missingCritical.length) {
+        this.logs.add('system', 'warn', `Runtime repair found ${missingCritical.length} missing critical file(s): ${missingCritical.join(', ')}.`)
+        onProgress(baseProgress({
+          percent: 2,
+          message: 'Repairing missing runtime files',
+          detail: `Restoring ${missingCritical[0]}${missingCritical.length > 1 ? ` and ${missingCritical.length - 1} more` : ''} from the verified offline bundle...`
+        }))
+      } else {
+        if (!(await exists(join(target.mariadbData, 'mysql'), signal))) {
+          onProgress(baseProgress({ phase: 'database', percent: 90, message: 'Initializing MariaDB', detail: 'This portal has no database yet.' }))
+          if (await this.initializeMariaDb(target.mariadb, target.mariadbData, signal, (detail, elapsedInPhase) => {
+            onProgress(baseProgress({
+              phase: 'database', percent: 92, message: 'Initializing MariaDB', detail,
+              etaSeconds: databaseRemainingSeconds(elapsedInPhase), speedBytesPerSecond: 0
+            }))
+          })) {
+            if (settings.mariadbPassword || settings.setupComplete) await this.store.updateSettings({ mariadbPassword: '', setupComplete: false })
+            this.logs.add('system', 'warn', 'MariaDB system tables were initialized without a command-line password. Complete security setup before going live.')
+          }
         }
+        onProgress(baseProgress({ percent: 88, message: 'Runtime files are already installed', detail: `Bundle ${manifest.version} is ready.` }))
+        return false
       }
-      onProgress(baseProgress({ percent: 88, message: 'Runtime files are already installed', detail: `Bundle ${manifest.version} is ready.` }))
-      return false
     }
 
     this.logs.add('system', 'info', `Preparing bundled WeebX runtime ${manifest.version}...`)
     await retryFileOperation(() => mkdir(target.root, { recursive: true }).then(() => undefined), {
       signal,
       onRetry: retryStatus('Creating the WeebX runtime folder')
+    })
+    // Create service-owned mutable folders before scanning/copying the large
+    // payload. This avoids a first-run race with Windows security scanners and
+    // keeps volatile logs out of the packaged read-only file set.
+    await prepareRuntimeDirectories([
+      join(target.apache, 'logs', 'access.log'),
+      join(target.root, 'logs', 'php-error.log'),
+      join(target.tmp, 'sessions', '.keep'),
+      join(target.tmp, 'phpmyadmin', '.keep')
+    ], {
+      signal,
+      onRetry: retryStatus('Creating writable service folders', { percent: 2 })
     })
     const groups = [
       { name: 'Apache', source: join(source, 'apache'), destination: target.apache },
@@ -143,22 +180,26 @@ export class RuntimeSeeder {
     let completedFiles = 0
     let cursor = 0
     let lastUpdate = 0
+    let lastEta: number | null = null
     const copyStartedAt = Date.now()
     const reportCopy = (file: RuntimeFile, force = false) => {
       const now = Date.now()
       if (!force && now - lastUpdate < 120) return
       lastUpdate = now
       const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1000))
-      const etaSeconds = estimateRemainingSeconds({
-        startedAt: copyStartedAt, now, completedBytes, totalBytes, completedFiles, totalFiles: files.length,
-        extraSeconds: MARIADB_SETUP_SECONDS
-      })
+      const copyDone = files.length > 0 && completedFiles >= files.length
+      const rawEta = copyDone
+        ? databaseRemainingSeconds(0)
+        : estimateRemainingSeconds({
+          startedAt: copyStartedAt, now, completedBytes, totalBytes, completedFiles, totalFiles: files.length
+        })
+      lastEta = copyDone ? rawEta : smoothRemainingSeconds(lastEta, rawEta)
       onProgress(baseProgress({
         phase: 'copying', percent: Math.min(88, Math.round(6 + ((totalBytes ? completedBytes / totalBytes : 0) * 0.35 + (completedFiles / Math.max(1, files.length)) * 0.65) * 82)),
         message: `Copying ${file.group}`,
         detail: file.relativePath,
         completedFiles, totalFiles: files.length, completedBytes, totalBytes,
-        elapsedSeconds, etaSeconds, speedBytesPerSecond: copySpeed(copyStartedAt, now, completedBytes)
+        elapsedSeconds, etaSeconds: lastEta, speedBytesPerSecond: copySpeed(copyStartedAt, now, completedBytes)
       }))
     }
     const worker = async () => {
@@ -198,8 +239,8 @@ export class RuntimeSeeder {
         phase: 'database', percent: 91, message: 'Initializing MariaDB',
         detail,
         completedFiles, totalFiles: files.length, completedBytes, totalBytes,
-        etaSeconds: Math.max(15, MARIADB_SETUP_SECONDS - elapsedInPhase),
-        speedBytesPerSecond: copySpeed(copyStartedAt, Date.now(), completedBytes)
+        etaSeconds: databaseRemainingSeconds(elapsedInPhase),
+        speedBytesPerSecond: 0
       }))
     })) {
       if (settings.mariadbPassword || settings.setupComplete) await this.store.updateSettings({ mariadbPassword: '', setupComplete: false })
@@ -227,8 +268,13 @@ export class RuntimeSeeder {
         checkAborted(signal)
         const from = join(source, entry.name)
         const to = join(destination, entry.name)
+        const relativePath = relative(sourceRoot, from)
+        // Apache archive logs are volatile runtime state. Copying an empty log
+        // from an MSI payload can preserve its read-only attribute and prevent
+        // httpd from starting.
+        if (group === 'Apache' && relativePath.split(/[\\/]/)[0].toLowerCase() === 'logs') continue
         if (entry.isDirectory()) await visit(from, to)
-        else if (entry.isFile()) result.push({ source: from, destination: to, size: (await retryFileOperation(() => stat(from), { signal })).size, group, relativePath: relative(sourceRoot, from) })
+        else if (entry.isFile()) result.push({ source: from, destination: to, size: (await retryFileOperation(() => stat(from), { signal })).size, group, relativePath })
       }
     }
     await visit(sourceRoot, destinationRoot)
@@ -246,15 +292,14 @@ export class RuntimeSeeder {
     checkAborted(signal)
     await retryFileOperation(() => mkdir(data, { recursive: true }).then(() => undefined), { signal })
     const startedAt = Date.now()
-    onHeartbeat('Creating system tables. This often takes 1-4 minutes...', 0)
+    onHeartbeat('Creating MariaDB system tables...', 0)
     await new Promise<void>((resolve, reject) => {
       const child = spawn(setup, [`--datadir=${data}`, '--password='], { cwd: root, windowsHide: true })
       let output = ''
       let settled = false
       const heartbeat = setInterval(() => {
         const elapsed = Math.floor((Date.now() - startedAt) / 1000)
-        const lastLine = output.trim().split(/\r?\n/).filter(Boolean).at(-1)
-        onHeartbeat(lastLine || `Still creating MariaDB system tables (${elapsed}s elapsed)...`, elapsed)
+        onHeartbeat(mariadbProgressDetail(output) || `Creating MariaDB system tables (${elapsed}s)...`, elapsed)
       }, 700)
       const finish = (error?: Error) => {
         if (settled) return
@@ -268,7 +313,7 @@ export class RuntimeSeeder {
       child.stdout.on('data', (chunk) => { output += chunk })
       child.stderr.on('data', (chunk) => { output += chunk })
       child.once('error', (error) => finish(error))
-      child.once('close', (code) => code === 0 ? finish() : finish(new Error(`MariaDB initialization failed: ${output.trim() || `exit ${code}`}`)))
+      child.once('close', (code) => code === 0 ? finish() : finish(new Error(`MariaDB initialization failed: ${mariadbFailureOutput(output, code)}`)))
     })
     return true
   }

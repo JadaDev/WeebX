@@ -149,7 +149,7 @@ export async function writeSitePhpIni(settings: RuntimeSettings, site: VirtualHo
     .replace(/; BEGIN WEEBX SITE PROFILE[\s\S]*?; END WEEBX SITE PROFILE\s*/g, '')
     .replace(/^(\s*)(zend_extension|extension)\s*=/gmi, '$1;$2=')
   const extensionLines = profile.phpExtensions.map((name) => name === 'opcache' ? 'zend_extension=opcache' : `extension=${name}`).join('\n')
-  const allowedRoots = [site.documentRoot, paths.root].map(slash).join(';')
+  const allowedRoots = [...new Set([site.applicationRoot || site.documentRoot, site.documentRoot, paths.root].map((item) => resolve(item)))].map(slash).join(';')
   const production = profile.phpProfile === 'production'
   const managed = `; BEGIN WEEBX SITE PROFILE
 extension_dir="${slash(join(versionRoot, 'ext'))}"
@@ -169,6 +169,8 @@ session.save_path="${slash(paths.sessions)}"
 session.use_strict_mode=1
 session.use_cookies=1
 session.use_only_cookies=1
+session.use_trans_sid=0
+session.upload_progress.enabled=0
 session.cookie_httponly=1
 session.cookie_samesite=Lax
 session.cookie_secure=${production && site.https ? '1' : '0'}
@@ -179,6 +181,14 @@ error_log="${slash(join(paths.logs, 'php-error.log'))}"
 error_reporting=E_ALL
 expose_php=${production ? 'Off' : 'On'}
 allow_url_include=Off
+cgi.force_redirect=1
+cgi.fix_pathinfo=0
+zend.exception_ignore_args=${production ? 'On' : 'Off'}
+zend.exception_string_param_max_len=${production ? '0' : '15'}
+zend.assertions=${production ? '-1' : '1'}
+opcache.enable=1
+opcache.validate_timestamps=1
+opcache.revalidate_freq=${production ? '60' : '0'}
 open_basedir=${profile.openBasedir ? `"${allowedRoots}"` : ''}
 disable_functions=${profile.disableDangerousFunctions ? DISABLED_FUNCTIONS.join(',') : ''}
 user_ini.filename=${profile.allowUserIni ? '.user.ini' : ''}
@@ -188,7 +198,7 @@ ${profile.customIni}
   await backupAndWrite(paths.phpIni, `${base.trimEnd()}\r\n\r\n${managed.replace(/\n/g, '\r\n')}`)
   if (applyPermissions) {
     await applyPathPermissionPreset(paths.root, profile.permissionPreset)
-    await applyPathPermissionPreset(site.documentRoot, profile.permissionPreset)
+    await applyPathPermissionPreset(site.applicationRoot || site.documentRoot, profile.permissionPreset)
   }
   return paths
 }

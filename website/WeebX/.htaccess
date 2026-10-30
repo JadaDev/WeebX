@@ -1,3 +1,19 @@
-Options -Indexes
-AddType application/octet-stream .msi
-AddType application/zip .zip
+Options -Indexes -MultiViews
+DirectoryIndex index.php
+
+<IfModule mod_headers.c>
+    Header always unset X-Powered-By
+    Header onsuccess unset X-Content-Type-Options
+    Header always set X-Content-Type-Options "nosniff"
+    Header onsuccess unset X-Permitted-Cross-Domain-Policies
+    Header always set X-Permitted-Cross-Domain-Policies "none"
+</IfModule>
+
+<IfModule mod_mime.c>
+    AddType application/octet-stream .msi
+    AddType application/zip .zip
+</IfModule>
+
+<FilesMatch "(?i)(?:^\.|\.(?:bak|conf|dist|env|ini|json|lock|log|sql|sqlite|tmp|ya?ml)$)">
+    Require all denied
+</FilesMatch>

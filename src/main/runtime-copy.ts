@@ -14,6 +14,7 @@ export interface FileRetryOptions {
   initialDelayMs?: number
   maximumDelayMs?: number
   maximumAttempts?: number
+  additionalRetryCodes?: readonly string[]
   onRetry?: (event: FileRetryEvent) => void | Promise<void>
 }
 
@@ -21,9 +22,10 @@ function cancelled(): Error {
   return Object.assign(new Error('WeebX preparation was cancelled.'), { name: 'AbortError' })
 }
 
-function transientWindowsFileError(error: unknown): boolean {
+function transientWindowsFileError(error: unknown, additionalCodes: readonly string[] = []): boolean {
   if (!error || typeof error !== 'object' || !('code' in error)) return false
-  return TRANSIENT_WINDOWS_FILE_ERRORS.has(String((error as { code?: unknown }).code).toUpperCase())
+  const code = String((error as { code?: unknown }).code).toUpperCase()
+  return TRANSIENT_WINDOWS_FILE_ERRORS.has(code) || additionalCodes.some((candidate) => candidate.toUpperCase() === code)
 }
 
 function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
@@ -59,7 +61,7 @@ export async function retryFileOperation<T>(operation: () => Promise<T>, options
       return await operation()
     } catch (error) {
       attempt += 1
-      if (!transientWindowsFileError(error) || attempt >= maximumAttempts) throw error
+      if (!transientWindowsFileError(error, options.additionalRetryCodes) || attempt >= maximumAttempts) throw error
       const delayMs = Math.min(maximumDelayMs, initialDelayMs * (2 ** Math.min(attempt - 1, 5)))
       await options.onRetry?.({ attempt, delayMs, error })
       await wait(delayMs, options.signal)
@@ -72,6 +74,12 @@ export async function prepareRuntimeDirectories(destinations: readonly string[],
     .sort((left, right) => left.length - right.length || left.localeCompare(right))
 
   for (const directory of directories) {
-    await retryFileOperation(() => mkdir(directory, { recursive: true }).then(() => undefined), options)
+    await retryFileOperation(() => mkdir(directory, { recursive: true }).then(() => undefined), {
+      ...options,
+      // Windows can briefly return ENOENT for a valid nested mkdir while a
+      // security product is observing its newly-created parent.
+      additionalRetryCodes: [...(options.additionalRetryCodes ?? []), 'ENOENT'],
+      maximumAttempts: options.maximumAttempts ?? 30
+    })
   }
 }

@@ -1,40 +1,32 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . '_internal' . DIRECTORY_SEPARATOR . 'http-security.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . '_internal' . DIRECTORY_SEPARATOR . 'download-stats.php';
 
 $cspNonce = base64_encode(random_bytes(18));
-header('X-Content-Type-Options: nosniff');
-header('Referrer-Policy: strict-origin-when-cross-origin');
-header('X-Frame-Options: DENY');
-header('Cross-Origin-Opener-Policy: same-origin');
-header('Cross-Origin-Resource-Policy: same-origin');
-header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()');
-header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests");
-if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+sendBrowserSecurityHeaders("default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; connect-src 'self'; font-src 'self'; media-src 'none'; object-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests", 'strict-origin-when-cross-origin');
+header('Content-Type: text/html; charset=utf-8');
+header('Cache-Control: no-store, max-age=0');
+$method = enforceReadOnlyRequestMethod();
 
 function e(?string $value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
-function pickDownload(string $dir, string $extension, array $preferred = []): ?array
+function pickDownload(string $dir, array $allowedNames): ?array
 {
     if (!is_dir($dir)) {
         return null;
     }
-    foreach ($preferred as $name) {
+    foreach ($allowedNames as $name) {
         $path = $dir . DIRECTORY_SEPARATOR . $name;
         if (is_file($path)) {
             return describeDownload($path);
         }
     }
-    $matches = array_values(array_filter(glob($dir . DIRECTORY_SEPARATOR . '*.' . $extension) ?: [], 'is_file'));
-    if (!$matches) {
-        return null;
-    }
-    usort($matches, static fn(string $a, string $b): int => filemtime($b) <=> filemtime($a));
-    return describeDownload($matches[0]);
+    return null;
 }
 
 function describeDownload(string $path): array
@@ -62,22 +54,21 @@ function assetUrl(string $relativePath): string
     return $relativePath . '?v=' . rawurlencode($version);
 }
 
-$version = '2.1.1';
+$version = '2.2.15';
 $filesDir = __DIR__ . DIRECTORY_SEPARATOR . 'Files';
-$msi = pickDownload($filesDir, 'msi', ['WeebX-Installer-x64.msi']);
-$zip = pickDownload($filesDir, 'zip', ['WeebX.zip', 'WeebX-Portable.zip']);
+$msi = pickDownload($filesDir, ['WeebX-Installer-x64.msi']);
+$zip = pickDownload($filesDir, ['WeebX.zip', 'WeebX-Portable.zip']);
 $downloadStats = publicDownloadStats();
 $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
 ?>
 <!doctype html>
-<html lang="en" class="no-js">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script nonce="<?= e($cspNonce) ?>">document.documentElement.classList.replace('no-js', 'js')</script>
     <title>WeebX — Modern XAMPP Alternative for Windows</title>
-    <meta name="description" content="Download WeebX, a modern XAMPP alternative for Windows with Apache, MariaDB and patched PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12 runtimes.">
-    <meta name="keywords" content="WeebX, local web hosting stack manager, XAMPP alternative, Windows web server, Apache, PHP, MariaDB, phpMyAdmin">
+    <meta name="description" content="Download WeebX <?= e($version) ?>, a modern XAMPP alternative for Windows with Apache, MariaDB, patched PHP 8.2–8.5, and one-click apps such as WordPress, Nextcloud, and Moodle.">
+    <meta name="keywords" content="WeebX, local web hosting stack manager, XAMPP alternative, Windows web server, Apache, PHP, MariaDB, phpMyAdmin, WordPress, one-click apps">
     <meta name="author" content="JadaDev">
     <meta name="application-name" content="WeebX">
     <meta name="robots" content="index, follow, max-image-preview:large">
@@ -89,7 +80,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="WeebX">
     <meta property="og:title" content="WeebX — Local Web Hosting Stack Manager">
-    <meta property="og:description" content="A polished XAMPP alternative with four patched PHP runtimes, Apache, MariaDB, module controls, and crash recovery.">
+    <meta property="og:description" content="A polished XAMPP alternative with four patched PHP runtimes, Apache, MariaDB, one-click open-source apps, and crash recovery.">
     <meta property="og:url" content="https://weebx.jadadev.com/">
     <meta property="og:image" content="https://weebx.jadadev.com/assets/weebx-logo.png">
     <meta property="og:image:alt" content="WeebX blue and violet logo">
@@ -97,20 +88,15 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     <meta property="og:image:height" content="1280">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="WeebX — Modern XAMPP Alternative for Windows">
-    <meta name="twitter:description" content="Apache, MariaDB and patched PHP 8.2.35 through 8.5.12 in one focused Windows app.">
+    <meta name="twitter:description" content="Apache, MariaDB, patched PHP 8.2–8.5, and one-click apps such as WordPress and Nextcloud.">
     <meta name="twitter:image" content="https://weebx.jadadev.com/assets/weebx-logo.png">
     <link rel="stylesheet" href="<?= e(assetUrl('assets/style.css')) ?>">
     <script type="application/ld+json" nonce="<?= e($cspNonce) ?>">
-    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"WeebX","applicationCategory":"DeveloperApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"<?= e($version) ?>","description":"A local web hosting stack manager with Apache, PHP and MariaDB for Windows.","url":"https://weebx.jadadev.com/","image":"https://weebx.jadadev.com/assets/weebx-logo.png","author":{"@type":"Organization","name":"JadaDev"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+    {"@context":"https://schema.org","@type":"SoftwareApplication","name":"WeebX","applicationCategory":"DeveloperApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"<?= e($version) ?>","description":"A local web hosting stack manager with Apache, PHP, MariaDB, and one-click open-source apps for Windows.","url":"https://weebx.jadadev.com/","image":"https://weebx.jadadev.com/assets/weebx-logo.png","author":{"@type":"Organization","name":"JadaDev"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
     </script>
     <script src="<?= e(assetUrl('assets/site.js')) ?>" defer></script>
 </head>
 <body>
-<div class="site-loader" aria-hidden="true">
-    <div class="loader-mark"><span></span><img src="assets/weebx-logo.png" alt=""></div>
-    <p>Preparing your workspace</p>
-</div>
-
 <header class="topbar">
     <a class="brand" href="#top" aria-label="WeebX home">
         <img src="assets/weebx-logo.png" alt="WeebX logo">
@@ -118,6 +104,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     </a>
     <nav aria-label="Primary navigation">
         <a href="#features">Features</a>
+        <a href="#apps">Apps</a>
         <a href="#stack">Stack</a>
         <a href="#security">Security</a>
         <a href="#download">Download</a>
@@ -131,7 +118,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         <div class="hero-copy">
             <span class="eyebrow"><i></i> BUILT FOR WINDOWS HOSTING</span>
             <h1>Local Web Hosting<br><em>Stack Manager.</em></h1>
-            <p class="lead">Run Apache, PHP, MariaDB and phpMyAdmin from one focused control panel—with isolated per-site runtimes, least-privilege database identities, a hardened Live / Production profile, safer updates, and automatic crash recovery.</p>
+            <p class="lead">Run Apache, PHP, MariaDB and phpMyAdmin from one focused control panel—with one-click apps, isolated per-site runtimes, least-privilege database identities, a hardened Live / Production profile, safer updates, and automatic crash recovery.</p>
             <div class="hero-actions">
                 <?php if ($msi): ?>
                     <a class="button primary download-trigger" href="<?= e($msi['href']) ?>" data-file="<?= e($msi['name']) ?>">Download for Windows <span>↓</span></a>
@@ -161,13 +148,14 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     </section>
 
     <section class="signal-strip" aria-label="Included technologies">
-        <span>Apache 2.4.69</span><i></i><span>PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12</span><i></i><span>MariaDB 12.3.3</span><i></i><span>phpMyAdmin 5.2.3</span><i></i><span>Virtual Hosts</span>
+        <span>Apache 2.4.69</span><i></i><span>PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12</span><i></i><span>MariaDB 12.3.3</span><i></i><span>17 one-click apps</span><i></i><span>phpMyAdmin 5.2.3</span><i></i><span>Virtual Hosts</span>
     </section>
 
     <section id="features" class="section-shell content-section">
         <div class="section-heading"><span>EVERYTHING IN ONE PLACE</span><h2>Web hosting without the friction.</h2><p>Develop locally, then run production websites from the same focused Windows control plane.</p></div>
         <div class="feature-grid">
             <article class="feature-card featured"><div class="feature-icon">◫</div><span>CONTROL</span><h3>Start, stop, recover.</h3><p>Manage Apache and MariaDB independently or together. Optional crash recovery restarts either service after the delay you choose.</p><div class="mini-service-pair"><div class="mini-status"><i></i><b>Apache is running</b><small>2.4.69 · Auto-restart on</small></div><div class="mini-status"><i></i><b>MariaDB is running</b><small>12.3.3 · Loopback only</small></div></div></article>
+            <article class="feature-card"><div class="feature-icon">▣</div><span>APPS</span><h3>One-click applications.</h3><p>Install WordPress, Nextcloud, Moodle, GitList, PrivateBin, and 12 more official open-source apps. Thirteen finish automatically; four keep a browser finish. Matching PHP, virtual host, and least-privilege database are already prepared.</p></article>
             <article class="feature-card"><div class="feature-icon">&lt;/&gt;</div><span>PHP</span><h3>Switch versions cleanly.</h3><p>Use bundled builds, discover new official x64 NTS releases automatically, or validate and import your own PHP ZIP.</p></article>
             <article class="feature-card"><div class="feature-icon">⌂</div><span>ISOLATED SITES</span><h3>One policy per website.</h3><p>Give every host its own PHP version, extensions, php.ini, sessions, temporary storage, upload limits, logs, database user, and NTFS permission policy.</p></article>
             <article class="feature-card"><div class="feature-icon">⌁</div><span>PORTABLE</span><h3>Your projects stay yours.</h3><p>Keep websites and MariaDB data through normal updates, or pack the whole environment when you need to move it.</p></article>
@@ -177,8 +165,52 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         </div>
     </section>
 
+    <section id="apps" class="section-shell apps-showcase" aria-label="WeebX pre-installed applications">
+        <div class="apps-intro">
+            <div class="section-heading">
+                <span>ONE-CLICK APPLICATIONS · NEW IN <?= e($version) ?></span>
+                <h2>Your next site,<br>ready in minutes.</h2>
+                <p>Browse a curated library of 17 official open-source apps. WeebX downloads the package, creates the website, PHP profile, HTTPS certificate, and least-privilege database identity, then keeps a persistent audit trail.</p>
+            </div>
+            <ul class="apps-points">
+                <li><b>Official sources only</b><span>SHA-256-pinned archives from each project’s own distribution host. Path traversal and oversized extracts are rejected; failed installs roll back.</span></li>
+                <li><b>Matching runtime, already chosen</b><span>Compatible PHP versions, required modules locked on, optional modules selectable, and Production or Development policy per app.</span></li>
+                <li><b>Isolated by default</b><span>Side sites get a reserved <code>.localhost</code> DNS host. Thirteen apps finish automatically, including GitList and PrivateBin. Matomo, ProcessWire, MyBB, and Piwigo open at their own local setup screen.</span></li>
+            </ul>
+        </div>
+        <figure class="apps-preview-shot">
+            <div class="preview-bar"><i></i><i></i><i></i><span>WeebX · Pre-installed apps</span></div>
+            <img src="<?= e(assetUrl('assets/apps-preview.jpg')) ?>" width="1280" height="720" alt="WeebX Pre-installed apps library with WordPress, Joomla, Drupal, Nextcloud, Moodle, and PrestaShop ready to install">
+            <figcaption>The in-app library: search, filter by category, then install into localhost or a separate local domain.</figcaption>
+        </figure>
+        <div class="apps-catalog-strip" aria-label="Applications included with WeebX">
+            <article><b>WP</b><span>WordPress</span><small>CMS · auto setup</small></article>
+            <article><b>J!</b><span>Joomla!</span><small>CMS · auto setup</small></article>
+            <article><b>Dr</b><span>Drupal</span><small>CMS · auto setup</small></article>
+            <article><b>Gr</b><span>Grav</span><small>CMS · auto setup</small></article>
+            <article><b>PW</b><span>ProcessWire</span><small>CMS · manual finish</small></article>
+            <article><b>MB</b><span>MyBB</span><small>Community · manual finish</small></article>
+            <article><b>BB</b><span>phpBB</span><small>Community · auto setup</small></article>
+            <article><b>MW</b><span>MediaWiki</span><small>Collaboration · auto setup</small></article>
+            <article><b>NC</b><span>Nextcloud</span><small>Collaboration · auto setup</small></article>
+            <article><b>Ma</b><span>Matomo</span><small>Analytics · manual finish</small></article>
+            <article><b>Md</b><span>Moodle</span><small>Learning · auto setup</small></article>
+            <article><b>OC</b><span>OpenCart</span><small>Commerce · auto setup</small></article>
+            <article><b>PS</b><span>PrestaShop</span><small>Commerce · auto setup</small></article>
+            <article><b>FR</b><span>FreshRSS</span><small>Collaboration · auto setup</small></article>
+            <article><b>Pi</b><span>Piwigo</span><small>Gallery · manual finish</small></article>
+            <article><b>GL</b><span>GitList</span><small>Developer · auto setup</small></article>
+            <article><b>PB</b><span>PrivateBin</span><small>Developer · auto setup</small></article>
+        </div>
+        <ol class="apps-flow">
+            <li><small>01</small><b>Choose the website</b><span>Default localhost or a side folder as a local DNS host, with HTTP and optional local HTTPS you can edit later from the app.</span></li>
+            <li><small>02</small><b>Match PHP and the database</b><span>Required modules stay on. WeebX creates a unique MariaDB login scoped to one database, with a Windows-encrypted password.</span></li>
+            <li><small>03</small><b>Install, then open</b><span>Automatic apps finish through their official installer. Guided apps stay local-only until setup files exist, then the installer is removed. Installed apps can reveal DNS and database details.</span></li>
+        </ol>
+    </section>
+
     <section class="section-shell php-manager-showcase" aria-label="WeebX PHP version manager preview">
-        <div class="section-heading"><span>PHP VERSION CONTROL</span><h2>Install, validate, and switch<br>without rebuilding your stack.</h2><p>The preview mirrors the real WeebX 2.1.1 PHP manager: isolated versions, environment profiles, official release discovery, and guided manual import.</p></div>
+        <div class="section-heading"><span>PHP VERSION CONTROL</span><h2>Install, validate, and switch<br>without rebuilding your stack.</h2><p>The preview mirrors the real WeebX <?= e($version) ?> PHP manager: isolated versions, environment profiles, official release discovery, and guided manual import.</p></div>
         <figure class="php-manager-window">
             <div class="php-shot-head"><div><small>PHP RUNTIME</small><b>PHP versions</b></div><button>+ Add PHP version</button><div class="php-shot-profile"><span class="active">Development</span><span>Live / Production</span></div><em>Active <b>8.5.12</b></em></div>
             <div class="php-shot-list">
@@ -206,7 +238,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
     </section>
 
     <section id="stack" class="section-shell stack-section">
-        <div class="stack-copy"><span class="eyebrow"><i></i> CURRENT RUNTIME</span><h2>A complete stack.<br><em>Ready when you are.</em></h2><p>WeebX brings the familiar local-server pieces together without hiding their configuration files or locking your work into a proprietary format. MariaDB is the community-developed open-source fork of MySQL; it keeps the familiar protocol and PHP drivers while WeebX uses the accurate MariaDB name throughout the interface.</p><ul><li>Multiple supported PHP versions</li><li>Per-site PHP, extensions, storage, logs, and limits</li><li>Least-privilege MariaDB users per site</li><li>Apache module, php.ini, and NTFS permission controls</li><li>Built-in local-only phpMyAdmin access</li></ul></div>
+        <div class="stack-copy"><span class="eyebrow"><i></i> CURRENT RUNTIME</span><h2>A complete stack.<br><em>Ready when you are.</em></h2><p>WeebX brings the familiar local-server pieces together without hiding their configuration files or locking your work into a proprietary format. MariaDB is the community-developed open-source fork of MySQL; it keeps the familiar protocol and PHP drivers while WeebX uses the accurate MariaDB name throughout the interface.</p><ul><li>Multiple supported PHP versions</li><li>One-click open-source apps with isolated PHP and database identities</li><li>Per-site PHP, extensions, storage, logs, and limits</li><li>Least-privilege MariaDB users per site</li><li>Apache module, php.ini, and NTFS permission controls</li><li>Built-in local-only phpMyAdmin access</li></ul></div>
         <div class="stack-grid">
             <article><small>WEB SERVER</small><b>Apache</b><strong>2.4.69</strong></article>
             <article><small>DATABASE</small><b>MariaDB</b><strong>12.3.3</strong></article>
@@ -253,7 +285,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         <div class="section-heading"><span>GET WEEBX <?= e($version) ?></span><h2>Choose how you want to run it.</h2><p>Every download requires acceptance of the Terms of Use and Privacy Policy.</p><div class="community-count"><strong data-download-count><?= number_format($uniqueDownloads) ?></strong><span>anonymous browser<?= $uniqueDownloads === 1 ? '' : 's' ?> downloaded WeebX</span></div></div>
         <div class="download-grid">
             <article class="download-card recommended">
-                <span class="recommendation">RECOMMENDED</span><div class="package-icon">▣</div><small>WINDOWS INSTALLER</small><h3>MSI package</h3><p>A standard per-user Windows installation with Start menu and desktop shortcuts.</p>
+                <span class="recommendation">RECOMMENDED</span><div class="package-icon">▣</div><small>WINDOWS INSTALLER</small><h3>MSI package</h3><p>A branded WeebX wizard: accept the license, choose the install folder, then Next through matching setup pages with Start menu and desktop shortcuts.</p>
                 <?php if ($msi): ?><div class="file-meta"><span><?= e($msi['size']) ?></span><span>Updated <?= e($msi['mtime']) ?></span><span><b data-file-download-count="<?= e($msi['name']) ?>"><?= number_format((int) ($downloadStats['files'][$msi['name']]['downloads'] ?? 0)) ?></b> downloads</span></div><a class="button primary download-trigger" href="<?= e($msi['href']) ?>" data-file="<?= e($msi['name']) ?>">Download MSI <span>↓</span></a><?php else: ?><span class="button disabled">MSI not uploaded yet</span><?php endif; ?>
             </article>
             <article class="download-card">
@@ -276,7 +308,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
 </main>
 
 <footer>
-    <div class="footer-main section-shell"><div class="footer-brand"><img src="assets/weebx-logo.png" alt=""><div><strong>WeebX</strong><p>A local web hosting stack manager for Windows.</p></div></div><div class="footer-links"><div><b>Product</b><a href="#features">Features</a><a href="#stack">Included stack</a><a href="#security">PHP security</a><a href="#download">Downloads</a></div><div><b>Legal</b><a href="#terms">Terms of Use</a><a href="#privacy">Privacy Policy</a><a href="#download-policy">Download Policy</a></div><div><b>Community</b><a href="https://github.com/JadaDev/WeebX" rel="noopener noreferrer">GitHub</a><a href="https://github.com/JadaDev/WeebX/issues" rel="noopener noreferrer">Report an issue</a><a href="https://github.com/JadaDev/WeebX/blob/main/LICENSE" rel="noopener noreferrer">MIT License</a></div></div></div>
+    <div class="footer-main section-shell"><div class="footer-brand"><img src="assets/weebx-logo.png" alt=""><div><strong>WeebX</strong><p>A local web hosting stack manager for Windows.</p></div></div><div class="footer-links"><div><b>Product</b><a href="#features">Features</a><a href="#apps">Pre-installed apps</a><a href="#stack">Included stack</a><a href="#security">PHP security</a><a href="#download">Downloads</a></div><div><b>Legal</b><a href="#terms">Terms of Use</a><a href="#privacy">Privacy Policy</a><a href="#download-policy">Download Policy</a></div><div><b>Community</b><a href="https://github.com/JadaDev/WeebX" rel="noopener noreferrer">GitHub</a><a href="https://github.com/JadaDev/WeebX/issues" rel="noopener noreferrer">Report an issue</a><a href="https://github.com/JadaDev/WeebX/blob/main/LICENSE" rel="noopener noreferrer">MIT License</a></div></div></div>
     <div class="footer-bottom section-shell"><span>© <?= date('Y') ?> JadaDev. WeebX <?= e($version) ?>.</span><small>WeebX is an independent XAMPP alternative for Windows and is not affiliated with Apache Friends or the XAMPP project.</small></div>
 </footer>
 

@@ -18,12 +18,12 @@ describe.skipIf(process.platform !== 'win32')('Windows private permission preset
     await mkdir(nested, { recursive: true })
     const rootFile = join(root, '.weebx-bundle-version')
     const nestedFile = join(nested, 'httpd.exe')
-    await writeFile(rootFile, '2026.10.24.2', 'utf8')
+    await writeFile(rootFile, '2026.10.28.1', 'utf8')
     await writeFile(nestedFile, 'test', 'utf8')
 
     await applyPrivateTreePermissions(root)
 
-    await expect(readFile(rootFile, 'utf8')).resolves.toBe('2026.10.24.2')
+    await expect(readFile(rootFile, 'utf8')).resolves.toBe('2026.10.28.1')
     await expect(readFile(nestedFile, 'utf8')).resolves.toBe('test')
   })
 })

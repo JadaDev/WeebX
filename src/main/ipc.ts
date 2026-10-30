@@ -1,10 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { execFile, spawn } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { access, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative } from 'node:path'
-import type { DashboardSnapshot, InstallRequest, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, RuntimeSettings, ServiceId, SiteIsolationDraft, SiteLogKind, VhostDraft } from '../shared/types'
+import { join } from 'node:path'
+import type { DashboardSnapshot, InstallRequest, PermissionPreset, PermissionTarget, PhpProfile, PortalOptions, PortalProgress, PreinstalledAppInstallRequest, PreinstalledAppUninstallOptions, RuntimeSettings, ServiceId, SiteIsolationDraft, SiteLogKind, VhostAccessDraft, VhostDraft } from '../shared/types'
 import type { JsonStore } from './store'
 import type { ProcessManager } from './process-manager'
 import type { ConfigManager } from './config-manager'
@@ -12,6 +11,7 @@ import type { VhostManager } from './vhost-manager'
 import type { Installer } from './installer'
 import type { LogBuffer } from './logs'
 import type { RelocationManager } from './relocation-manager'
+import { findInstalledApp, type PreinstalledAppManager } from './preinstalled-apps'
 import { inspectPorts } from './ports'
 import { runtimePaths } from './paths'
 import { recoverMariaDbPassword, syncStoredMariaDbPassword, mariaDbPasswordError, waitUntilPasswordWorks } from './mariadb-password'
@@ -23,8 +23,10 @@ import { inspectStackComponents } from './stack-components'
 import { assertPasswordInput, publicRuntimeSettings } from './security'
 import { applyPermissionPreset } from './permissions'
 import { siteDatabaseCredential, siteProfileOptions, siteProfilePaths } from './site-profile'
-
-const execFileAsync = promisify(execFile)
+import { findPreinstalledApp } from './preinstalled-app-catalog'
+import { isElevated } from './administrator'
+import { removeAllWeebxHostBlocks } from './windows-hosts'
+import { nearestExistingDirectory, resolveManagedDirectory } from './managed-path'
 
 async function waitForFile(path: string, attempts = 20): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -43,12 +45,9 @@ interface Dependencies {
   installer: Installer
   logs: LogBuffer
   relocation: RelocationManager
+  preinstalledApps: PreinstalledAppManager
   exitForUninstall: () => void
-}
-
-async function isElevated(): Promise<boolean> {
-  if (process.platform !== 'win32') return process.getuid?.() === 0
-  try { await execFileAsync('net.exe', ['session'], { windowsHide: true }); return true } catch { return false }
+  restartElevated: () => Promise<void>
 }
 
 function assertService(value: unknown): asserts value is ServiceId {
@@ -60,7 +59,7 @@ function assertConfig(value: unknown): asserts value is 'php' | 'apache' | 'vhos
 }
 
 export function registerIpc(deps: Dependencies): () => void {
-  const { window, store, processes, configs, vhosts, installer, logs, relocation, exitForUninstall } = deps
+  const { window, store, processes, configs, vhosts, installer, logs, relocation, preinstalledApps, exitForUninstall, restartElevated } = deps
   const channels: string[] = []
   let passwordRevealPromptActive = false
   const handle = (channel: string, listener: (...args: any[]) => unknown) => {
@@ -144,6 +143,47 @@ export function registerIpc(deps: Dependencies): () => void {
     return inspectPorts([settings.apachePort, settings.apacheSslPort, settings.mariadbPort])
   })
   handle('weebx:logs', () => logs.list())
+  handle('weebx:preinstalled-app-catalog', () => preinstalledApps.catalog())
+  handle('weebx:preinstalled-apps', () => preinstalledApps.list())
+  handle('weebx:preinstalled-app-activity', (_event, installId: unknown) => {
+    if (installId !== undefined && typeof installId !== 'string') throw new Error('Invalid app activity request.')
+    return preinstalledApps.activity(installId as string | undefined)
+  })
+  handle('weebx:preinstalled-app-preflight', async (_event, request: PreinstalledAppInstallRequest) => {
+    if (!request || typeof request !== 'object') throw new Error('Invalid app installation request.')
+    return preinstalledApps.preflight(request, await isElevated())
+  })
+  handle('weebx:preinstalled-app-install', async (_event, request: PreinstalledAppInstallRequest) => {
+    if (!request || typeof request !== 'object') throw new Error('Invalid app installation request.')
+    const preflight = await preinstalledApps.preflight(request, await isElevated())
+    const blocker = preflight.checks.find((check) => check.status === 'blocked')
+    if (blocker) throw new Error(`${blocker.title}: ${blocker.detail}`)
+    if (!['running', 'starting'].includes(processes.status('apache').state)) await processes.start('apache')
+    if (findPreinstalledApp(request.catalogId)?.database && !['running', 'starting'].includes(processes.status('mariadb').state)) await processes.start('mariadb')
+    const result = await preinstalledApps.install(request)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    else await processes.start('apache')
+    return result
+  })
+  handle('weebx:preinstalled-app-complete', async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) throw new Error('Installed app not found.')
+    const record = await preinstalledApps.markSetupComplete(id)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    return record
+  })
+  handle('weebx:preinstalled-app-uninstall', async (_event, id: unknown, options: PreinstalledAppUninstallOptions) => {
+    if (typeof id !== 'string' || !id) throw new Error('Installed app not found.')
+    if (!options || typeof options !== 'object') throw new Error('Choose what to remove.')
+    const record = findInstalledApp(await preinstalledApps.list(), id)
+    if (record?.databaseName && (options.removeDatabase || options.removeSite) && !['running', 'starting'].includes(processes.status('mariadb').state)) await processes.start('mariadb')
+    const removed = await preinstalledApps.uninstall(id, options)
+    try {
+      if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    } catch (error) {
+      logs.add('system', 'warn', `Apache restart after uninstalling ${removed.name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return removed
+  })
   handle('weebx:config-read', async (_event, kind: unknown) => { assertConfig(kind); return configs.read(kind) })
   handle('weebx:config-save', async (_event, kind: unknown, content: unknown) => {
     assertConfig(kind)
@@ -169,6 +209,20 @@ export function registerIpc(deps: Dependencies): () => void {
     if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
     return site
   })
+  handle('weebx:vhost-access-update', async (_event, id: unknown, access: VhostAccessDraft) => {
+    if (typeof id !== 'string' || !id) throw new Error('Virtual host not found.')
+    if (!access || typeof access !== 'object' || typeof access.http !== 'boolean' || typeof access.https !== 'boolean') throw new Error('Choose HTTP and HTTPS.')
+    const site = await vhosts.updateAccess(id, access)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    return site
+  })
+  handle('weebx:preinstalled-app-access', async (_event, id: unknown, access: VhostAccessDraft) => {
+    if (typeof id !== 'string' || !id) throw new Error('Installed app not found.')
+    if (!access || typeof access !== 'object' || typeof access.http !== 'boolean' || typeof access.https !== 'boolean') throw new Error('Choose HTTP and HTTPS.')
+    const record = await preinstalledApps.updateSiteAccess(id, access)
+    if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
+    return record
+  })
   handle('weebx:vhost-delete', async (_event, id: string) => {
     const site = (await vhosts.list()).find((item) => item.id === id)
     if (site?.isolation?.database && !['running', 'starting'].includes(processes.status('mariadb').state)) throw new Error('Start MariaDB so WeebX can safely remove the managed database user. The database itself will be preserved.')
@@ -183,6 +237,19 @@ export function registerIpc(deps: Dependencies): () => void {
   handle('weebx:site-profile-options', async (_event, version: unknown) => {
     if (typeof version !== 'string') throw new Error('Choose an installed PHP version.')
     return siteProfileOptions(await store.getSettings(), version)
+  })
+  handle('weebx:preinstalled-app-connection', async (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) throw new Error('Installed app not found.')
+    const record = findInstalledApp(await preinstalledApps.list(), id)
+    if (!record) throw new Error('Installed app not found.')
+    const result = await dialog.showMessageBox(window, {
+      type: 'warning', title: 'Reveal application connection details',
+      message: `Show connection details for ${record.name} on ${record.domain}?`,
+      detail: 'This includes the site and admin URLs, administrator username and password when WeebX created the account, PHP runtime, and managed database credentials. Details stay on this screen and are hidden automatically after 30 seconds.',
+      buttons: ['Cancel', 'Reveal details'], defaultId: 0, cancelId: 0, noLink: true
+    })
+    if (result.response !== 1) return null
+    return preinstalledApps.connection(record.id)
   })
   handle('weebx:site-database-reveal', async (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('Virtual host not found.')
@@ -298,12 +365,8 @@ export function registerIpc(deps: Dependencies): () => void {
   })
   handle('weebx:open-path', async (_event, path: string) => {
     const settings = await store.getSettings()
-    const allowed = [settings.runtimeRoot, settings.htdocsRoot].some((root) => {
-      const child = relative(root, path)
-      return child === '' || (!child.startsWith('..') && !isAbsolute(child))
-    })
-    if (!allowed) throw new Error('Path is outside the WeebX runtime.')
-    const error = await shell.openPath(path)
+    const folder = await resolveManagedDirectory(path, [settings.runtimeRoot, settings.htdocsRoot])
+    const error = await shell.openPath(folder)
     if (error) throw new Error(error)
   })
   handle('weebx:open-external', async (_event, url: string) => {
@@ -311,8 +374,18 @@ export function registerIpc(deps: Dependencies): () => void {
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Unsupported URL.')
     await shell.openExternal(parsed.toString())
   })
-  handle('weebx:choose-directory', async () => {
-    const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] })
+  handle('weebx:choose-directory', async (_event, startPath: unknown) => {
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose a folder',
+      properties: ['openDirectory', 'createDirectory']
+    }
+    if (typeof startPath === 'string' && startPath.trim()) {
+      try {
+        const existing = await nearestExistingDirectory(startPath)
+        if (existing) options.defaultPath = existing
+      } catch { /* invalid start path; open the picker without a default */ }
+    }
+    const result = await dialog.showOpenDialog(window, options)
     return result.canceled ? null : result.filePaths[0]
   })
   const resetMariaDbPassword = async (password: string, initialSetup: boolean) => {
@@ -387,6 +460,7 @@ export function registerIpc(deps: Dependencies): () => void {
       for (const id of affected) await processes.start(id)
     }
   })
+  handle('weebx:restart-elevated', async () => restartElevated())
   handle('weebx:uninstall-status', async () => {
     const settings = await store.getSettings()
     return inspectStack(settings.runtimeRoot)
@@ -410,6 +484,8 @@ export function registerIpc(deps: Dependencies): () => void {
     if (!entry || !/^\{[0-9A-F-]+\}$/i.test(entry.guid)) throw new Error('Could not find the WeebX MSI. Use Windows Settings > Apps to remove it after stopping Apache and MariaDB here.')
     const userData = app.getPath('userData')
     await clearResetStateBeforeUninstall(userData, settings.runtimeRoot)
+    try { await removeAllWeebxHostBlocks() }
+    catch { logs.add('system', 'warn', 'Could not remove WeebX host entries from the Windows hosts file. Delete leftover # BEGIN WEEBX HOST blocks as administrator if any remain.') }
     const scriptPath = join(tmpdir(), 'weebx-uninstall.vbs')
     const startedMarker = join(tmpdir(), 'weebx-uninstall.started')
     await rm(startedMarker, { force: true })
@@ -463,7 +539,8 @@ export function registerIpc(deps: Dependencies): () => void {
   const unsubscribe = [
     logs.subscribe((entry) => !window.isDestroyed() && window.webContents.send('weebx:log', entry)),
     processes.subscribe((status) => !window.isDestroyed() && window.webContents.send('weebx:status', status)),
-    installer.subscribe((progress) => !window.isDestroyed() && window.webContents.send('weebx:install-progress', progress))
+    installer.subscribe((progress) => !window.isDestroyed() && window.webContents.send('weebx:install-progress', progress)),
+    preinstalledApps.subscribe((progress) => !window.isDestroyed() && window.webContents.send('weebx:preinstalled-app-progress', progress))
   ]
   return () => {
     channels.forEach((channel) => ipcMain.removeHandler(channel))

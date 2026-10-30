@@ -1,23 +1,10 @@
-# WeebX 2.1.1
-
-Site: [weebx.jadadev.com](https://weebx.jadadev.com/)
-
-## Screenshot
-
-![WeebX screenshot](docs/screenshot.png)
-
-## Video
-
-### WeebX Walkthrough
-
-Watch WeebX in action! See how to manage Apache, MariaDB (MySQL), PHP, virtual hosts, and more.
-
-https://github.com/user-attachments/assets/a8205b58-199b-413c-bf54-ad81d04361f0
+# WeebX 2.2.15
 
 WeebX is a **Local Web Hosting Stack Manager for Windows**. It brings Apache, multiple PHP runtimes, MariaDB, phpMyAdmin, virtual hosts, configuration, permissions, logs, portability, and service recovery into one desktop control panel.
 
 WeebX is designed for both local development and real website hosting. Development is the default environment; a hardened **Live / Production** profile is always one click away.
 
+Website: [weebx.jadadev.com](https://weebx.jadadev.com/)  
 License: MIT
 
 ## Included stack
@@ -35,7 +22,7 @@ MariaDB is the community-developed, open-source fork of MySQL used by WeebX. It 
 
 WeebX supports Windows 10 and Windows 11 x64.
 
-1. Run `WeebX-Installer-x64.msi`.
+1. Run the versioned MSI (`WeebX-2.2.15-x64.msi`). The wizard shows WeebX-branded pages, requires license acceptance (I accept / I do not accept), and lets you choose the install folder.
 2. Open WeebX and let it prepare the bundled runtime.
 3. Complete first-run MariaDB setup:
    - keep the generated strong password;
@@ -99,6 +86,20 @@ A strong password has at least 12 characters and includes uppercase, lowercase, 
 MariaDB listens on `127.0.0.1` by default, `LOCAL INFILE` is disabled, anonymous accounts and the test database are removed during setup, and the root account is limited to local host identities. phpMyAdmin uses cookie authentication and is restricted to local requests. Passwordless phpMyAdmin login is enabled only when the operator explicitly chose an empty MariaDB password.
 
 ## Features
+
+### Pre-installed apps
+
+- Browse a searchable, categorized library of 17 open-source applications, including WordPress, Joomla, Drupal, MyBB, phpBB, MediaWiki, Nextcloud, Matomo, Moodle, OpenCart, PrestaShop, Grav, ProcessWire, FreshRSS, Piwigo, GitList, and PrivateBin.
+- Install into the default `localhost` website or create a separate side website as a local DNS host with its own folder and domain. Reserved `.localhost` names resolve automatically; other names can be mapped in the Windows hosts file and edited later from the app, Sites, or `C:\Windows\System32\drivers\etc\hosts`.
+- Select a compatible installed PHP version, inspect required modules, and add optional modules before installation. Required modules cannot be accidentally disabled.
+- Choose HTTP, local HTTPS, HTTP-to-HTTPS redirection, Windows hosts-file mapping, Production or Development PHP behavior, process-function blocking, and `.user.ini` policy from the wizard, then change those access settings later from Installed apps or Sites.
+- Generate editable database and username defaults while WeebX creates a random encrypted password and a least-privilege MariaDB identity.
+- Complete WordPress, Joomla, Drupal, Grav, phpBB, MediaWiki, Nextcloud, Moodle, OpenCart, PrestaShop, FreshRSS, GitList, and PrivateBin automatically through each project’s official CLI, install API, or local configuration, including site title and an administrator account when the app needs one. GitList writes a local Git browser with a sample repository when Git is installed. PrivateBin writes a no-account encrypted pastebin. Matomo, ProcessWire, MyBB, and Piwigo keep their own browser installers, labeled **Manual finish**, and open at the correct local setup page with the server already prepared.
+- Download SHA-256-pinned releases only from an explicit allowlist of official distribution hosts, retry a checksum-pinned mirror when an official host returns HTTP 403 or 404, reject redirects to other hosts, and reject excessive archive entries, files, compression ratios, expanded sizes, and path traversal.
+- Keep browser installers local-only until their generated configuration is verified, then remove known installer folders and enable normal site access.
+- Track validation, download, extraction, provisioning, configuration, completion, rollback, and uninstall events in a persistent application audit trail.
+- Open installed websites and folders, and reveal DNS, site and admin URLs (forum, store, wiki, dashboard, and login links), document root, PHP runtime, administrator username, email, and password, and managed database host, port, name, username, and password through the existing protected confirmation flow. Administrator and database passwords are encrypted with Windows credentials. Optionally preserve files or database data while uninstall always removes the virtual host, database login, hosts-file entry, certificate, PHP profile, and generated logs. Uninstalling WeebX itself also strips leftover `# BEGIN WEEBX HOST` blocks from the Windows hosts file.
+- Verify a private ownership marker and the configured `htdocs` boundary before deleting application files. The default WeebX welcome site is backed up and restored when a default-site app is removed.
 
 ### Dashboard and service control
 
@@ -239,9 +240,9 @@ $env:CSC_KEY_PASSWORD = '<provided securely outside the repository>'
 npm run dist
 ```
 
-`npm run dist` is the production release path. It requires a trusted Windows code-signing certificate, signs WeebX.exe and the MSI, then rejects the release unless every signature is valid and uses the same certificate. Release artifacts are assembled in `release\WeebX` only after these checks. Third-party packages come from the official PHP for Windows, Apache Lounge, MariaDB, and phpMyAdmin distribution channels and are verified with pinned SHA-256 hashes.
+`npm run dist` is the production release path. It requires a trusted Windows code-signing certificate, signs WeebX.exe, the no-admin NSIS Setup EXE, and the enterprise MSI, then rejects the release unless every signature is valid and uses the same certificate. Release artifacts are assembled in `release\WeebX` only after these checks. Third-party packages come from the official PHP for Windows, Apache Lounge, MariaDB, and phpMyAdmin distribution channels and are verified with pinned SHA-256 hashes.
 
-For isolated local development only, `npm run dist:unsigned` creates an unsigned test package. Never upload or distribute that output. Existing unsigned 2.1.1 artifacts must be replaced by a signed production rebuild before public use; source-level retry logic cannot establish publisher trust for an unsigned executable.
+For isolated local development only, `npm run dist:unsigned` creates unsigned test packages. Never upload or distribute that output. Any unsigned 2.2.15 artifacts must be replaced by a signed production rebuild before public use; source-level retry logic cannot establish publisher trust for an unsigned executable.
 
 The public website is in `website\WeebX`. Release files belong in `website\WeebX\Files`; direct access to that directory is denied and downloads pass through the validated endpoint.
 

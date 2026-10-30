@@ -30,11 +30,15 @@ verify their SHA-256 hashes:
 npm run prepare:runtime
 ```
 
-To build the Windows MSI after preparing the runtime:
+To build signed production installers after preparing the runtime:
 
 ```powershell
-npm run dist:msi
+$env:CSC_LINK = 'C:\secure\path\weebx-signing-certificate.pfx'
+$env:CSC_KEY_PASSWORD = '<provided securely outside the repository>'
+npm run dist
 ```
+
+The public download site lives in `website\WeebX`. Do not commit release binaries into `website\WeebX\Files`.
 
 ## Pull requests
 

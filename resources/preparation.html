@@ -67,6 +67,7 @@
   </main>
   <script>
     const state = {
+      phase: 'scanning',
       message: 'Inspecting the offline runtime',
       detail: 'Starting...',
       percent: 0,
@@ -106,6 +107,12 @@
       if (hours) return hours + ':' + String(minutes).padStart(2, '0') + ':' + String(rest).padStart(2, '0');
       return minutes + ':' + String(rest).padStart(2, '0');
     };
+    const remainingLabel = (eta, elapsed) => {
+      if (state.percent >= 100 || state.phase === 'complete') return 'Finishing...';
+      if (eta == null) return elapsed < 3 ? 'Measuring speed...' : 'Still working...';
+      if (eta < 1) return state.phase === 'database' ? 'Finishing database setup...' : 'Finishing...';
+      return formatTime(eta);
+    };
     const render = () => {
       const extra = (Date.now() - state.receivedAt) / 1000;
       const elapsed = (state.elapsedSeconds || 0) + extra;
@@ -116,9 +123,10 @@
       document.getElementById('percent').textContent = Math.round(state.percent || 0) + '%';
       document.getElementById('files').textContent = (state.completedFiles || 0).toLocaleString() + ' / ' + (state.totalFiles || 0).toLocaleString();
       document.getElementById('size').textContent = formatBytes(state.completedBytes || 0) + ' / ' + formatBytes(state.totalBytes || 0);
-      document.getElementById('speed').textContent = state.speedBytesPerSecond > 512 ? formatBytes(state.speedBytesPerSecond) + '/s' : '—';
+      const copying = state.phase === 'copying' && state.speedBytesPerSecond > 512;
+      document.getElementById('speed').textContent = copying ? formatBytes(state.speedBytesPerSecond) + '/s' : '—';
       document.getElementById('elapsed').textContent = clock(elapsed);
-      document.getElementById('eta').textContent = formatTime(eta, elapsed < 3 ? 'Measuring speed...' : 'Still working...');
+      document.getElementById('eta').textContent = remainingLabel(eta, elapsed);
     };
 
     window.__weebxBoot = (boot) => {

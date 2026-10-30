@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { backupAndWrite, copyFileBestEffort, ensureDirectory } from './safe-file'
+import { backupAndWrite, copyFileBestEffort, ensureDirectory, ensureWritableFile } from './safe-file'
 
 describe('backupAndWrite', () => {
   it('replaces a config even when the previous backup is read-only', async () => {
@@ -38,5 +38,20 @@ describe('ensureDirectory', () => {
     await ensureDirectory(join(tmp, 'sessions'))
     expect((await stat(tmp)).isDirectory()).toBe(true)
     expect((await stat(join(tmp, 'sessions'))).isDirectory()).toBe(true)
+  })
+})
+
+describe('ensureWritableFile', () => {
+  it('repairs a packaged read-only log without truncating it', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'weebx-writable-log-'))
+    const file = join(folder, 'apache', 'logs', 'access.log')
+    await ensureWritableFile(file)
+    await writeFile(file, 'existing request\n', 'utf8')
+    await chmod(file, 0o444)
+
+    await ensureWritableFile(file)
+    await writeFile(file, 'next request\n', { flag: 'a' })
+
+    expect(await readFile(file, 'utf8')).toBe('existing request\nnext request\n')
   })
 })

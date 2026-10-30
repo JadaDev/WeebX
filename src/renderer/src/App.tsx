@@ -1,19 +1,20 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  Activity, Boxes, Check, ChevronRight, CircleAlert, Code2, Database, Download,
+  Activity, Boxes, Check, ChevronLeft, ChevronRight, CircleAlert, Code2, Database, Download,
   CircleHelp, ExternalLink, Eye, EyeOff, FileCode2, FolderOpen, Gauge, Globe2, HardDrive, KeyRound, LockKeyhole,
-  Orbit, Play, Plus, Power, RefreshCw, RotateCw, Save, Server, Settings, ShieldCheck,
-  Square, Terminal, Trash2, Upload, Wrench, X, Zap
+  ListChecks, Orbit, PackageOpen, Play, Plus, Power, RefreshCw, RotateCw, Save, Search, Server, Settings, ShieldCheck,
+  Sparkles, Square, Terminal, Trash2, Upload, Wrench, X, Zap
 } from 'lucide-react'
-import type { DashboardSnapshot, InstallProgress, LogEntry, PermissionPreset, PermissionTarget, PhpRelease, PublicRuntimeSettings, RuntimeSettings, ServiceId, ServiceStatus, SiteDatabaseCredential, SiteIsolationDraft, SiteLogKind, SiteLogSnapshot, SiteProfileOptions, VhostDraft, VirtualHost } from '../../shared/types'
+import type { DashboardSnapshot, InstallProgress, LogEntry, PermissionPreset, PermissionTarget, PhpRelease, PreinstalledAppActivity, PreinstalledAppCatalogItem, PreinstalledAppConnection, PreinstalledAppInstallRequest, PreinstalledAppPreflight, PreinstalledAppProgress, PreinstalledAppRecord, PublicRuntimeSettings, RuntimeSettings, ServiceId, ServiceStatus, SiteDatabaseCredential, SiteIsolationDraft, SiteLogKind, SiteLogSnapshot, SiteProfileOptions, VhostAccessDraft, VhostDraft, VirtualHost } from '../../shared/types'
 import { APACHE_VERSION, MARIADB_VERSION, PHPMYADMIN_VERSION, WEEBX_VERSION } from '../../shared/version'
 import logoUrl from './assets/weebx-logo.png'
 import { ActionButton } from './ActionButton'
 import { RuntimeTunePanel } from './RuntimeTune'
 import { PortalPack } from './PortalPack'
 import { UninstallApp } from './UninstallApp'
+import { AppLogo } from './AppLogo'
 
-type Page = 'dashboard' | 'sites' | 'php' | 'config' | 'logs' | 'portal' | 'settings'
+type Page = 'dashboard' | 'apps' | 'sites' | 'php' | 'config' | 'logs' | 'portal' | 'settings'
 type ConfigKind = 'php' | 'apache' | 'vhosts' | 'mariadb'
 
 const emptySnapshot: DashboardSnapshot = {
@@ -23,6 +24,7 @@ const emptySnapshot: DashboardSnapshot = {
 
 const nav: { id: Page; label: string; icon: typeof Gauge }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: Gauge },
+  { id: 'apps', label: 'Pre-installed apps', icon: PackageOpen },
   { id: 'sites', label: 'Virtual hosts', icon: Globe2 },
   { id: 'php', label: 'PHP versions', icon: Boxes },
   { id: 'config', label: 'Configuration', icon: FileCode2 },
@@ -83,6 +85,7 @@ export function App() {
 
   const content: Record<Page, ReactNode> = {
     dashboard: <Dashboard data={data} logs={logs} run={run} onChangePassword={() => { setFocusPassword(true); setPage('settings') }} />,
+    apps: <PreinstalledApps data={data} run={run} />,
     sites: <Sites data={data} run={run} />,
     php: <PhpManager data={data} progress={progress} run={run} />,
     config: <ConfigEditor run={run} />,
@@ -104,7 +107,7 @@ export function App() {
       </div>
     </aside>
     <main>
-      <header><div><p>LOCAL WEB HOSTING STACK MANAGER</p><h1>{nav.find((item) => item.id === page)?.label}</h1></div><div className="header-actions"><ActionButton className="icon-btn" title="Refresh" icon={<RefreshCw size={17} />} onClick={() => refresh()} /><AdminBadge elevated={data.elevated} /></div></header>
+      <header><div><p>LOCAL WEB HOSTING STACK MANAGER</p><h1>{nav.find((item) => item.id === page)?.label}</h1></div><div className="header-actions"><ActionButton className="icon-btn" title="Refresh" icon={<RefreshCw size={17} />} onClick={() => refresh()} /><AdminBadge elevated={data.elevated} onRestart={() => run(() => window.weebx.restartAsAdministrator(), false)} /></div></header>
       {error && <div className="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError(null)}><X size={16} /></button></div>}
       <section className={`page${page === 'config' || page === 'logs' ? ' fill' : ''}`}>{content[page]}</section>
     </main>
@@ -219,7 +222,9 @@ function Sites({ data, run }: { data: DashboardSnapshot; run: Runner }) {
   const [options, setOptions] = useState<SiteProfileOptions | null>(null)
   const [credential, setCredential] = useState<SiteDatabaseCredential | null>(null)
   const [siteLog, setSiteLog] = useState<SiteLogSnapshot | null>(null)
-  const [draft, setDraft] = useState<VhostDraft>(() => ({ name: '', serverName: '', aliases: [], http: true, https: false, updateHosts: true, isolation: defaultSiteIsolation(data.settings.activePhpVersion) }))
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [editAccess, setEditAccess] = useState<VhostAccessDraft>({ http: true, https: false })
+  const [draft, setDraft] = useState<VhostDraft>(() => ({ name: '', serverName: '', aliases: [], http: true, https: false, forceHttps: false, updateHosts: false, isolation: defaultSiteIsolation(data.settings.activePhpVersion) }))
   const loadOptions = async (version: string, applyRecommended = false) => {
     const next = await run(() => window.weebx.siteProfileOptions(version), false)
     if (!next) return
@@ -240,22 +245,33 @@ function Sites({ data, run }: { data: DashboardSnapshot; run: Runner }) {
     return () => { window.clearTimeout(timeout); window.removeEventListener('blur', hide) }
   }, [credential])
   const openCreate = () => {
-    setDraft({ name: '', serverName: '', aliases: [], http: true, https: false, updateHosts: true, isolation: defaultSiteIsolation(data.settings.activePhpVersion) })
-    setOptions(null); setShow(true)
+    setDraft({ name: '', serverName: '', aliases: [], http: true, https: false, forceHttps: false, updateHosts: false, isolation: defaultSiteIsolation(data.settings.activePhpVersion) })
+    setOptions(null); setCreateError(null); setShow(true)
   }
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); setCreating(true)
+    event.preventDefault(); setCreating(true); setCreateError(null)
     try {
-      if (await run(() => window.weebx.createVhost(draft))) { setShow(false); setHelp(false) }
+      await window.weebx.createVhost(draft)
+      await run(async () => true)
+      setShow(false); setHelp(false)
+    } catch (cause) {
+      setCreateError(messageOf(cause))
     } finally { setCreating(false) }
   }
   const openProfile = (site: VirtualHost) => {
-    setEditing(site); setEditIsolation(editableIsolation(site, data.settings.activePhpVersion)); setCredential(null); setSiteLog(null); setOptions(null)
+    setEditing(site)
+    setEditIsolation(editableIsolation(site, data.settings.activePhpVersion))
+    setEditAccess({ http: site.http, https: site.https, forceHttps: site.forceHttps === true, updateHosts: Boolean(site.managedHosts?.length) })
+    setCredential(null); setSiteLog(null); setOptions(null)
   }
   const saveProfile = async () => {
     if (!editing) return
     setSavingProfile(true)
-    try { if (await run(() => window.weebx.updateVhostProfile(editing.id, editIsolation))) { setEditing(null); setCredential(null) } }
+    try {
+      const access = await run(() => window.weebx.updateVhostAccess(editing.id, editAccess))
+      if (!access) return
+      if (await run(() => window.weebx.updateVhostProfile(editing.id, editIsolation))) { setEditing(null); setCredential(null) }
+    }
     finally { setSavingProfile(false) }
   }
   const revealCredential = async () => {
@@ -269,19 +285,21 @@ function Sites({ data, run }: { data: DashboardSnapshot; run: Runner }) {
     if (result) setSiteLog(result)
   }
   return <><div className="page-toolbar"><div><h2>Virtual hosts</h2><p>Run simple sites or give each project its own PHP, storage, logs, database identity, and security policy.</p></div><ActionButton className="primary" icon={<Plus size={16} />} label="New site" onClick={openCreate} /></div>
-    <div className="site-list">{data.virtualHosts.map((site) => <article key={site.id} className={site.isolation ? 'isolated' : ''}><div className="site-glyph">{site.isolation ? <ShieldCheck size={20} /> : <Globe2 size={20} />}</div><div className="site-main"><div><h3>{site.serverName}</h3><span className={site.enabled ? 'enabled' : 'disabled'}>{site.enabled ? 'Enabled' : 'Disabled'}</span>{site.isolation && <span className="isolation-badge">Isolated</span>}{site.isolation?.database && !site.isolation.database.passwordSet && <span className="credential-repair">Credential setup required</span>}</div><p>{site.documentRoot}</p><div className="tags">{site.http && <span>HTTP</span>}{site.https && <span><LockKeyhole size={11} /> HTTPS</span>}{site.isolation && <span>PHP {site.isolation.phpVersion}</span>}{site.isolation?.database && <span><Database size={11} /> {site.isolation.database.databaseName}</span>}{site.aliases.map((alias) => <span key={alias}>{alias}</span>)}</div></div><div className="row-actions"><ActionButton title="Manage isolated profile" icon={<Wrench size={17} />} onClick={() => openProfile(site)} /><ActionButton title="Open folder" icon={<FolderOpen size={17} />} onClick={async () => (await run(() => window.weebx.openPath(site.documentRoot), false)) !== undefined} /><ActionButton title={site.enabled ? 'Disable' : 'Enable'} icon={<Power size={17} />} onClick={async () => (await run(() => window.weebx.setVhostEnabled(site.id, !site.enabled))) !== undefined} /><ActionButton className="trash" title="Remove (files and database are preserved)" icon={<Trash2 size={17} />} onClick={async () => { if (!confirm(`Remove ${site.serverName}? Project files and its database will be preserved; the managed database login will be removed.`)) return false; return (await run(() => window.weebx.deleteVhost(site.id))) !== undefined }} /></div></article>)}{!data.virtualHosts.length && <div className="big-empty"><ShieldCheck size={30} /><h3>No sites yet</h3><p>Create an isolated project with its own runtime policy and database identity.</p><ActionButton icon={<Plus size={16} />} label="Create your first site" onClick={openCreate} /></div>}</div>
+    <div className="site-list">{data.virtualHosts.map((site) => <article key={site.id} className={site.isolation ? 'isolated' : ''}><div className="site-glyph">{site.isolation ? <ShieldCheck size={20} /> : <Globe2 size={20} />}</div><div className="site-main"><div><h3>{site.serverName}</h3><span className={site.enabled ? 'enabled' : 'disabled'}>{site.enabled ? 'Enabled' : 'Disabled'}</span>{site.isolation && <span className="isolation-badge">Isolated</span>}{site.isolation?.database && !site.isolation.database.passwordSet && <span className="credential-repair">Credential setup required</span>}</div><p>{site.documentRoot}</p><div className="tags">{site.http && <span>HTTP</span>}{site.https && <span><LockKeyhole size={11} /> HTTPS</span>}{site.isolation && <span>PHP {site.isolation.phpVersion}</span>}{site.isolation?.database && <span><Database size={11} /> {site.isolation.database.databaseName}</span>}{site.aliases.map((alias) => <span key={alias}>{alias}</span>)}</div></div><div className="row-actions"><ActionButton title="Edit DNS host, HTTPS, and isolation" icon={<Wrench size={17} />} onClick={() => openProfile(site)} /><ActionButton title="Open folder" icon={<FolderOpen size={17} />} onClick={async () => (await run(() => window.weebx.openPath(site.documentRoot), false)) !== undefined} /><ActionButton title={site.enabled ? 'Disable' : 'Enable'} icon={<Power size={17} />} onClick={async () => (await run(() => window.weebx.setVhostEnabled(site.id, !site.enabled))) !== undefined} /><ActionButton className="trash" title="Remove (files and database are preserved)" icon={<Trash2 size={17} />} onClick={async () => { if (!confirm(`Remove ${site.serverName}? Project files and its database will be preserved; the managed database login will be removed.`)) return false; return (await run(() => window.weebx.deleteVhost(site.id))) !== undefined }} /></div></article>)}{!data.virtualHosts.length && <div className="big-empty"><ShieldCheck size={30} /><h3>No sites yet</h3><p>Create an isolated project with its own runtime policy and database identity.</p><ActionButton icon={<Plus size={16} />} label="Create your first site" onClick={openCreate} /></div>}</div>
     {show && <Modal wide title="Create virtual host" onClose={() => { setShow(false); setHelp(false) }}><form className="form site-form" onSubmit={(event) => void submit(event)}><div className="site-basics">
       <label><FieldHint text="Project name (folder)" tip="Folder WeebX creates inside htdocs." /><input required placeholder="customer-portal" value={draft.name} onChange={(e) => { const name = e.target.value; setDraft((old) => ({ ...old, name, isolation: old.isolation ? { ...old.isolation, database: old.isolation.database ? { ...old.isolation.database, databaseName: `${name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_db`.slice(0, 63), username: `${name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_app`.slice(0, 32) } : undefined } : undefined })) }} /></label>
-      <label><FieldHint text="Server name" tip="The hostname Apache answers for." /><input required placeholder="portal.example.com" value={draft.serverName} onChange={(e) => setDraft({ ...draft, serverName: e.target.value })} /></label>
-      <label><FieldHint text="Aliases" tip="Optional comma-separated hostnames." /><input placeholder="www.portal.example.com" value={draft.aliases.join(', ')} onChange={(e) => setDraft({ ...draft, aliases: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
-      <div className="site-protocols"><Toggle checked={draft.http} onChange={(http) => setDraft({ ...draft, http })} label="HTTP" /><Toggle checked={draft.https} onChange={(https) => setDraft({ ...draft, https })} label="HTTPS (self-signed)" /><Toggle checked={draft.updateHosts} onChange={(updateHosts) => setDraft({ ...draft, updateHosts })} label="Map locally in Windows hosts" /></div>
+      <label><FieldHint text="Server name" tip="Use a .localhost DNS host (no Administrator) or any hostname mapped in Windows hosts." /><input required placeholder="portal.localhost" value={draft.serverName} onChange={(e) => { const serverName = e.target.value; setDraft({ ...draft, serverName, updateHosts: automaticLocalhost(serverName) ? false : draft.updateHosts }) }} /></label>
+      <label><FieldHint text="Aliases" tip="Optional comma-separated hostnames." /><input placeholder="www.portal.localhost" value={draft.aliases.join(', ')} onChange={(e) => setDraft({ ...draft, aliases: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></label>
+      <SiteAccessControls http={draft.http} https={draft.https} forceHttps={draft.forceHttps} updateHosts={draft.updateHosts} showHosts={!automaticLocalhost(draft.serverName)} automaticDns={automaticLocalhost(draft.serverName)} domain={draft.serverName} onChange={(patch) => setDraft({ ...draft, ...patch, forceHttps: patch.https === false || patch.http === false ? false : (patch.forceHttps ?? draft.forceHttps) })} />
     </div><div className="isolation-switch"><div><ShieldCheck size={20} /><span><b>Isolated site profile</b><small>Separate PHP configuration, writable storage, logs, database identity, and permission policy.</small></span></div><Toggle checked={Boolean(draft.isolation)} onChange={(enabled) => setDraft({ ...draft, isolation: enabled ? defaultSiteIsolation(data.settings.activePhpVersion, draft.name) : undefined })} label={draft.isolation ? 'Enabled' : 'Disabled'} /></div>
       {draft.isolation && <SiteProfileEditor profile={draft.isolation} options={options} versions={data.phpVersions.filter((item) => item.installed).map((item) => item.version)} profileRoot={`${data.settings.runtimeRoot}\\site-profiles\\${draft.name || 'project-name'}`} mariaDbRunning={data.services.some((item) => item.id === 'mariadb' && item.state === 'running')} onVersion={(version) => void loadOptions(version, true)} onChange={(isolation) => setDraft({ ...draft, isolation })} />}
+      {draft.updateHosts && !data.elevated && <div className="modal-admin-note"><CircleAlert size={15} /><span><b>Administrator mode may be required</b><small>Windows requires approval if this local domain is not already in the hosts file.</small></span><ActionButton icon={<ShieldCheck size={13} />} label="Restart as administrator" onClick={() => window.weebx.restartAsAdministrator().catch((cause) => setCreateError(messageOf(cause)))} /></div>}
+      {createError && <div className="wizard-error" role="alert"><CircleAlert size={15} /><span>{createError}</span><button type="button" aria-label="Dismiss error" onClick={() => setCreateError(null)}><X size={14} /></button></div>}
       <div className="modal-actions"><button type="button" onClick={() => setHelp(true)}><CircleHelp size={15} /> Help</button><div className="modal-actions-end"><button type="button" onClick={() => setShow(false)}>Cancel</button><ActionButton className="primary" type="submit" working={creating} icon={<Plus size={16} />} label="Create site" /></div></div>
     </form></Modal>}
-    {editing && <Modal wide title={`Isolation · ${editing.serverName}`} onClose={() => { setEditing(null); setCredential(null) }}><div className="form site-form"><div className="isolation-switch"><div>{editIsolation ? <ShieldCheck size={20} /> : <CircleAlert size={20} />}<span><b>{editIsolation ? 'Isolated profile enabled' : 'Standard shared profile'}</b><small>{editIsolation ? 'This site has dedicated PHP settings and runtime storage.' : 'This site currently inherits the global PHP runtime.'}</small></span></div><Toggle checked={Boolean(editIsolation)} onChange={(enabled) => setEditIsolation(enabled ? editableIsolation(editing, data.settings.activePhpVersion) : undefined)} label={editIsolation ? 'Enabled' : 'Disabled'} /></div>
+    {editing && <Modal wide title={`Site · ${editing.serverName}`} onClose={() => { setEditing(null); setCredential(null) }}><div className="form site-form"><div className="site-access-card"><div><Globe2 size={18} /><span><b>Local DNS host</b><small>{automaticLocalhost(editing.serverName) ? `${editing.serverName} resolves automatically. Change HTTP/HTTPS here without editing the Windows hosts file.` : `This name is a local DNS host. WeebX can map it in Windows hosts, or you can edit C:\\Windows\\System32\\drivers\\etc\\hosts (look for BEGIN WEEBX HOST).`}</small></span></div><SiteAccessControls http={editAccess.http} https={editAccess.https} forceHttps={editAccess.forceHttps} updateHosts={editAccess.updateHosts} showHosts={!automaticLocalhost(editing.serverName)} automaticDns={automaticLocalhost(editing.serverName)} domain={editing.serverName} onChange={(patch) => setEditAccess((old) => ({ ...old, ...patch, forceHttps: patch.https === false || patch.http === false ? false : (patch.forceHttps ?? old.forceHttps) }))} /></div><div className="isolation-switch"><div>{editIsolation ? <ShieldCheck size={20} /> : <CircleAlert size={20} />}<span><b>{editIsolation ? 'Isolated profile enabled' : 'Standard shared profile'}</b><small>{editIsolation ? 'This site has dedicated PHP settings and runtime storage.' : 'This site currently inherits the global PHP runtime.'}</small></span></div><Toggle checked={Boolean(editIsolation)} onChange={(enabled) => setEditIsolation(enabled ? editableIsolation(editing, data.settings.activePhpVersion) : undefined)} label={editIsolation ? 'Enabled' : 'Disabled'} /></div>
       {editIsolation && <SiteProfileEditor profile={editIsolation} options={options} versions={data.phpVersions.filter((item) => item.installed).map((item) => item.version)} profileRoot={`${data.settings.runtimeRoot}\\site-profiles\\${editing.name}`} mariaDbRunning={data.services.some((item) => item.id === 'mariadb' && item.state === 'running')} onVersion={(version) => void loadOptions(version, true)} onChange={setEditIsolation} credential={credential} onRevealCredential={editing.isolation?.database ? revealCredential : undefined} siteLog={siteLog} onReadLog={readSiteLog} />}
-      <div className="modal-actions">{editing.isolation && <ActionButton icon={<FolderOpen size={14} />} label="Profile storage" onClick={async () => (await run(() => window.weebx.openPath(`${data.settings.runtimeRoot}\\site-profiles\\${editing.name}`), false)) !== undefined} />}<span className="isolation-footnote">Disabling isolation preserves the site files and database but removes its managed database login.</span><div className="modal-actions-end"><button type="button" onClick={() => setEditing(null)}>Cancel</button><ActionButton className="primary" working={savingProfile} icon={<Save size={15} />} label="Save profile" onClick={saveProfile} /></div></div>
+      <div className="modal-actions">{editing.isolation && <ActionButton icon={<FolderOpen size={14} />} label="Profile storage" onClick={async () => (await run(() => window.weebx.openPath(`${data.settings.runtimeRoot}\\site-profiles\\${editing.name}`), false)) !== undefined} />}<span className="isolation-footnote">Disabling isolation preserves the site files and database but removes its managed database login.</span><div className="modal-actions-end"><button type="button" onClick={() => setEditing(null)}>Cancel</button><ActionButton className="primary" working={savingProfile} icon={<Save size={15} />} label="Save site" onClick={saveProfile} /></div></div>
     </div></Modal>}
     {help && <Modal title="How isolated sites work" onClose={() => setHelp(false)}><div className="help-copy"><p>Each isolated site uses its selected PHP executable with a dedicated <code>php.ini</code>, session folder, temporary directories, upload staging area, and log files.</p><p><b>Filesystem boundary:</b> open_basedir limits PHP file access to the site and profile folders. It is defense in depth, not a replacement for a separate Windows account or virtual machine.</p><p><b>Database identity:</b> WeebX creates a strong-password user limited to this database. The root account is never written into the site.</p><p><b>Live hosting:</b> select Live / Production, keep user-level INI overrides disabled, use HTTPS, and test the application before exposure.</p></div><div className="modal-actions"><button className="primary" type="button" onClick={() => setHelp(false)}>Got it</button></div></Modal>}
   </>
@@ -306,6 +324,204 @@ function SiteProfileEditor({ profile, options, versions, profileRoot, mariaDbRun
       {tab === 'logs' && onReadLog && <><div className="site-log-toolbar"><div><button type="button" className={siteLog?.kind === 'php' ? 'active' : ''} onClick={() => onReadLog('php')}>PHP errors</button><button type="button" className={siteLog?.kind === 'apache-error' ? 'active' : ''} onClick={() => onReadLog('apache-error')}>Apache errors</button><button type="button" className={siteLog?.kind === 'apache-access' ? 'active' : ''} onClick={() => onReadLog('apache-access')}>Access log</button></div><button type="button" onClick={() => onReadLog(siteLog?.kind ?? 'php')}><RefreshCw size={12} /> Refresh</button></div><div className="site-log-path">{siteLog?.path ?? `${profileRoot}\\logs`}{siteLog?.truncated && <span>Showing latest 750 KB</span>}</div><pre className="site-log-view">{siteLog?.content || 'No entries yet.'}</pre></>}
     </div>
   </div>
+}
+
+type AppsView = 'catalog' | 'installed' | 'activity'
+
+function PreinstalledApps({ data, run }: { data: DashboardSnapshot; run: Runner }) {
+  const [view, setView] = useState<AppsView>('catalog')
+  const [catalog, setCatalog] = useState<PreinstalledAppCatalogItem[]>([])
+  const [installed, setInstalled] = useState<PreinstalledAppRecord[]>([])
+  const [activity, setActivity] = useState<PreinstalledAppActivity[]>([])
+  const [search, setSearch] = useState('')
+  const [category, setCategory] = useState('all')
+  const [selected, setSelected] = useState<PreinstalledAppCatalogItem | null>(null)
+  const [step, setStep] = useState(0)
+  const [draft, setDraft] = useState<PreinstalledAppInstallRequest | null>(null)
+  const [profileOptions, setProfileOptions] = useState<SiteProfileOptions | null>(null)
+  const [progress, setProgress] = useState<PreinstalledAppProgress | null>(null)
+  const [installing, setInstalling] = useState(false)
+  const [completed, setCompleted] = useState<PreinstalledAppRecord | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<PreinstalledAppRecord | null>(null)
+  const [removeChoices, setRemoveChoices] = useState({ removeFiles: true, removeDatabase: true, removeSite: true })
+  const [removing, setRemoving] = useState(false)
+  const [credential, setCredential] = useState<PreinstalledAppConnection | null>(null)
+  const [preflight, setPreflight] = useState<PreinstalledAppPreflight | null>(null)
+  const [checkingPreflight, setCheckingPreflight] = useState(false)
+  const [wizardError, setWizardError] = useState<string | null>(null)
+  const [accessTarget, setAccessTarget] = useState<PreinstalledAppRecord | null>(null)
+  const [accessDraft, setAccessDraft] = useState<VhostAccessDraft | null>(null)
+  const [savingAccess, setSavingAccess] = useState(false)
+
+  const refreshApps = async () => {
+    const [nextCatalog, nextInstalled, nextActivity] = await Promise.all([
+      window.weebx.preinstalledAppCatalog(), window.weebx.installedApps(), window.weebx.preinstalledAppActivity()
+    ])
+    setCatalog(nextCatalog); setInstalled(nextInstalled); setActivity(nextActivity)
+  }
+  useEffect(() => {
+    void refreshApps()
+    return window.weebx.onPreinstalledAppProgress(setProgress)
+  }, [])
+  useEffect(() => {
+    if (!credential) return
+    const timeout = window.setTimeout(() => setCredential(null), 30000)
+    const hide = () => setCredential(null)
+    window.addEventListener('blur', hide)
+    return () => { window.clearTimeout(timeout); window.removeEventListener('blur', hide) }
+  }, [credential])
+  useEffect(() => {
+    if (step !== 2 || !draft || completed) return
+    setCheckingPreflight(true)
+    setPreflight(null)
+    const timeout = window.setTimeout(() => {
+      void window.weebx.preflightPreinstalledApp(draft)
+        .then((result) => setPreflight(result))
+        .catch((cause) => setWizardError(messageOf(cause)))
+        .finally(() => setCheckingPreflight(false))
+    }, 250)
+    return () => window.clearTimeout(timeout)
+  }, [step, draft, completed])
+  useEffect(() => {
+    if (!wizardError) return
+    document.querySelector('.wizard-error')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [wizardError])
+
+  const compatibleVersions = (app: PreinstalledAppCatalogItem) => data.phpVersions.filter((version) => version.installed && appPhpCompatible(version.version, app.php.minimum, app.php.maximum))
+  const begin = async (app: PreinstalledAppCatalogItem) => {
+    const versions = compatibleVersions(app)
+    if (!versions.length) return
+    const phpVersion = versions.find((item) => item.version.startsWith(app.php.recommended))?.version ?? versions.at(-1)!.version
+    const key = app.id.replace(/[^a-z0-9]+/g, '_')
+    setSelected(app); setStep(0); setCompleted(null); setProgress(null); setCredential(null); setPreflight(null); setWizardError(null)
+    setDraft({
+      catalogId: app.id, location: 'side', projectName: app.id, domain: `${app.id}.localhost`, http: true, https: false, forceHttps: false,
+      updateHosts: false, phpVersion, phpProfile: 'production', disableDangerousFunctions: true, allowUserIni: false,
+      phpExtensions: [...new Set([...app.php.requiredExtensions, ...app.php.recommendedExtensions])],
+      databaseName: app.database ? `${key}_db` : undefined, databaseUsername: app.database ? `${key}_app` : undefined,
+      siteTitle: `My ${app.name} site`, adminUsername: 'admin', adminPassword: browserStrongPassword(), adminEmail: 'admin@example.test'
+    })
+    const options = await run(() => window.weebx.siteProfileOptions(phpVersion), false)
+    if (options) {
+      setProfileOptions(options)
+      setDraft((old) => old ? { ...old, phpExtensions: old.phpExtensions.filter((extension) => options.extensions.includes(extension)) } : old)
+    }
+  }
+  const setDraftField = <K extends keyof PreinstalledAppInstallRequest>(key: K, value: PreinstalledAppInstallRequest[K]) => setDraft((old) => old ? { ...old, [key]: value } : old)
+  const updateProject = (projectName: string) => {
+    if (!draft || !selected) return
+    const key = projectName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || selected.id
+    setDraft({ ...draft, projectName, domain: draft.location === 'side' ? `${projectName.toLowerCase().replace(/[^a-z0-9-]+/g, '-') || selected.id}.localhost` : 'localhost', updateHosts: false, databaseName: selected.database ? `${key}_db` : undefined, databaseUsername: selected.database ? `${key}_app`.slice(0, 32) : undefined })
+  }
+  const changeLocation = (location: 'default' | 'side') => draft && setDraft({ ...draft, location, domain: location === 'default' ? 'localhost' : `${draft.projectName}.localhost`, updateHosts: false })
+  const changePhp = async (phpVersion: string) => {
+    if (!draft || !selected) return
+    const options = await run(() => window.weebx.siteProfileOptions(phpVersion), false)
+    if (!options) return
+    setProfileOptions(options)
+    setDraft({ ...draft, phpVersion, phpExtensions: [...new Set([...selected.php.requiredExtensions, ...selected.php.recommendedExtensions.filter((item) => options.extensions.includes(item))])] })
+  }
+  const install = async () => {
+    if (!draft) return
+    setCheckingPreflight(true); setWizardError(null)
+    try {
+      const readiness = await window.weebx.preflightPreinstalledApp(draft)
+      setPreflight(readiness)
+      if (!readiness.ready) return
+      setInstalling(true); setProgress(null)
+      const result = await window.weebx.installPreinstalledApp(draft)
+      setCompleted(result)
+      await refreshApps()
+    } catch (cause) {
+      setWizardError(messageOf(cause))
+    } finally { setCheckingPreflight(false); setInstalling(false) }
+  }
+  const uninstall = async () => {
+    if (!removeTarget) return
+    setRemoving(true)
+    try {
+      const result = await run(() => window.weebx.uninstallPreinstalledApp(removeTarget.id || removeTarget.siteId || removeTarget.domain, removeChoices))
+      if (result) { setRemoveTarget(null); setCredential(null); await refreshApps() }
+    } finally { setRemoving(false) }
+  }
+  const reveal = async (record: PreinstalledAppRecord) => {
+    const result = await run(() => window.weebx.revealInstalledAppConnection(record.id), false)
+    if (result) setCredential(result)
+  }
+  const markComplete = async (record: PreinstalledAppRecord) => {
+    const result = await run(() => window.weebx.completePreinstalledAppSetup(record.id), false)
+    if (result) await refreshApps()
+  }
+
+  const categories = ['all', ...new Set(catalog.map((item) => item.category))]
+  const visible = catalog.filter((item) => (category === 'all' || item.category === category) && `${item.name} ${item.description} ${item.category}`.toLowerCase().includes(search.toLowerCase()))
+  const installedIds = new Set(installed.map((item) => item.catalogId))
+  const canContinueHost = Boolean(draft && draft.projectName.trim() && draft.domain.trim() && (draft.http || draft.https))
+  const canContinueRuntime = Boolean(draft && selected && selected.php.requiredExtensions.every((extension) => draft.phpExtensions.includes(extension)) && (!selected.database || draft.databaseName && draft.databaseUsername))
+  const needsAccount = selected?.setup === 'automatic' && selected.account !== false
+  const canContinueAdmin = Boolean(!selected || selected.setup !== 'automatic' || (draft?.siteTitle?.trim() && (!needsAccount || (draft.adminUsername && (draft.adminPassword?.length ?? 0) >= 12 && draft.adminEmail))))
+
+  return <>
+    <div className="apps-hero"><div><span><Sparkles size={13} /> ONE-CLICK APPLICATIONS</span><h2>Your next site, ready in minutes.</h2><p>WeebX handles the package, domain, HTTPS, PHP runtime, modules, database identity, and audit trail. Auto setup apps finish completely; Manual finish apps keep their own installer.</p></div><div className="apps-hero-stat"><b>{catalog.length}</b><span>open-source apps</span><small>{installed.length} installed locally</small></div></div>
+    <div className="apps-tabs"><button className={view === 'catalog' ? 'active' : ''} onClick={() => setView('catalog')}><PackageOpen size={15} /> App library <span>{catalog.length}</span></button><button className={view === 'installed' ? 'active' : ''} onClick={() => setView('installed')}><ShieldCheck size={15} /> Installed <span>{installed.length}</span></button><button className={view === 'activity' ? 'active' : ''} onClick={() => setView('activity')}><ListChecks size={15} /> Activity <span>{activity.length}</span></button></div>
+
+    {view === 'catalog' && <><div className="apps-toolbar"><label><Search size={15} /><input aria-label="Search apps" placeholder="Search apps, categories, or use cases…" value={search} onChange={(event) => setSearch(event.target.value)} /></label><div className="category-scroll">{categories.map((item) => <button key={item} className={category === item ? 'active' : ''} onClick={() => setCategory(item)}>{item === 'all' ? 'All apps' : item}</button>)}</div></div>
+      <div className="app-catalog">{visible.map((app) => { const versions = compatibleVersions(app); const isInstalled = installedIds.has(app.id); return <article className={`app-card app-${app.category}`} key={app.id}><div className="app-card-top"><AppLogo id={app.id} name={app.name} /><div className="app-badges"><span>{app.category}</span>{app.setup === 'automatic' ? <span className="auto"><Sparkles size={10} /> Auto setup</span> : <span className="manual">Manual finish</span>}</div></div><h3>{app.name}</h3><p>{app.description}</p><small className="app-setup-hint">{app.setupSummary}</small><div className="app-meta"><span>v{app.version}</span><span>{app.license}</span><span>PHP {app.php.minimum}+</span></div><div className="app-card-foot">{!versions.length ? <span className="compat-error"><CircleAlert size={13} /> No compatible PHP installed</span> : <span className="compat-ok"><Check size={13} /> PHP {versions.map((item) => item.version).join(', ')}</span>}<ActionButton className="primary" disabled={!versions.length} label={isInstalled ? 'Install another' : 'Install'} icon={<ChevronRight size={14} />} onClick={() => begin(app)} /></div></article> })}</div>
+      {!visible.length && <div className="big-empty app-empty"><Search size={28} /><h3>No apps found</h3><p>Try another search or category.</p></div>}</>}
+
+    {view === 'installed' && <div className="installed-apps">{installed.map((record) => { const catalogApp = catalog.find((item) => item.id === record.catalogId); const setup = record.setup ?? catalogApp?.setup ?? (record.setupUrl ? 'browser' : 'automatic'); const revealed = credential?.installId === record.id; return <article key={record.id}><AppLogo id={record.catalogId} name={record.name} /><div className="installed-main"><div><h3>{record.name}</h3><span className={record.status}>{record.status === 'needs-setup' ? 'Finish setup · local only' : 'Ready'}</span><span className={setup === 'automatic' ? 'auto' : 'manual'}>{setup === 'automatic' ? 'Auto setup' : 'Manual finish'}</span></div><button className="installed-url" onClick={() => void window.weebx.openExternal(record.setupUrl || record.url)}>{record.url}<ExternalLink size={11} /></button><div className="tags"><span>{record.location === 'default' ? 'Default website' : 'Side website'}</span><span>DNS {record.domain}</span><span>PHP {record.phpVersion}</span>{record.databaseName && <span><Database size={11} /> {record.databaseName}</span>}{record.databaseUsername && <span>DB user {record.databaseUsername}</span>}{record.adminUsername && <span>Admin {record.adminUsername}</span>}<span>{new Date(record.createdAt).toLocaleDateString()}</span></div>{revealed && credential && <dl className="app-credential">{connectionRows(credential).map((row) => <div key={row.label}><dt>{row.label}</dt><dd>{row.href ? <button type="button" className="connection-link" onClick={() => void window.weebx.openExternal(row.value)}><code>{row.value}</code><ExternalLink size={11} /></button> : <code>{row.value}</code>}</dd></div>)}<small>{credential.adminPassword ? 'Administrator password included. ' : credential.setup === 'automatic' ? 'This install has no stored administrator password. ' : ''}{credential.database ? 'Database password included. ' : ''}Passwords are encrypted with your Windows credentials and hidden after 30 seconds.</small></dl>}</div><div className="row-actions app-row-actions">{record.status === 'needs-setup' && <ActionButton className="setup-done" title="Verify setup, clean the installer, and enable access" icon={<Check size={16} />} onClick={() => markComplete(record)} />}<ActionButton title="Open website" icon={<ExternalLink size={16} />} onClick={() => window.weebx.openExternal(record.setupUrl || record.url)} /><ActionButton title="Open files" icon={<FolderOpen size={16} />} onClick={() => window.weebx.openPath(record.documentRoot)} /><ActionButton title="Edit HTTPS and DNS host" icon={<Wrench size={16} />} onClick={() => { const site = data.virtualHosts.find((item) => item.id === record.siteId); setAccessTarget(record); setAccessDraft({ http: site?.http ?? true, https: site?.https ?? Boolean(record.url.startsWith('https:')), forceHttps: record.forceHttps === true, updateHosts: Boolean(site?.managedHosts?.length) }) }} /><ActionButton title="Reveal connection details" icon={<KeyRound size={16} />} onClick={() => reveal(record)} /><ActionButton className="trash" title="Uninstall" icon={<Trash2 size={16} />} onClick={() => { setRemoveTarget(record); setRemoveChoices({ removeFiles: true, removeDatabase: true, removeSite: true }) }} /></div></article> })}{!installed.length && <div className="big-empty app-empty"><PackageOpen size={30} /><h3>No applications installed</h3><p>Pick an app from the library and WeebX will prepare everything.</p><ActionButton className="primary" icon={<ChevronLeft size={15} />} label="Browse app library" onClick={() => setView('catalog')} /></div>}</div>}
+
+    {view === 'activity' && <div className="app-activity"><div className="activity-head"><div><h3>Application audit trail</h3><p>Persistent install, configuration, rollback, and uninstall events.</p></div><ActionButton icon={<RefreshCw size={14} />} label="Refresh" onClick={refreshApps} /></div>{[...activity].reverse().map((entry) => <div className="activity-row" key={entry.id}><span className={`activity-dot ${entry.level}`} /><time>{new Date(entry.timestamp).toLocaleString()}</time><b>{catalog.find((item) => item.id === entry.catalogId)?.name ?? entry.catalogId}</b><em>{entry.phase}</em><p>{entry.message}</p></div>)}{!activity.length && <Empty text="No application activity yet" />}</div>}
+
+    {selected && draft && <Modal wide title={`${completed ? 'Installed' : 'Install'} · ${selected.name}`} onClose={() => !installing && setSelected(null)}><div className="app-wizard"><div className="wizard-rail"><div className="wizard-app"><AppLogo id={selected.id} name={selected.name} /><span><b>{selected.name}</b><small>Version {selected.version}</small></span></div>{['Website', 'PHP & database', selected.setup === 'automatic' && selected.account !== false ? 'Admin & review' : 'Review & install'].map((label, index) => <div key={label} className={`wizard-step ${step === index ? 'active' : ''} ${step > index || completed ? 'done' : ''}`}><i>{step > index || completed ? <Check size={12} /> : index + 1}</i><span>{label}</span></div>)}<div className="wizard-security"><ShieldCheck size={15} /><span><b>Managed safely</b><small>Official source · isolated PHP · least-privilege database</small></span></div></div><div className="wizard-content">
+        {!completed && !installing && step === 0 && <>
+          <div className="wizard-heading"><span>01 · WEBSITE</span><h3>Where should it live?</h3><p>Use the main localhost website or create a separate local domain.</p></div>
+          <div className="location-choice"><button className={draft.location === 'default' ? 'active' : ''} onClick={() => changeLocation('default')}><Globe2 size={21} /><b>Default website</b><small>Install at <code>localhost</code> in the htdocs root.</small>{draft.location === 'default' && <Check size={15} />}</button><button className={draft.location === 'side' ? 'active' : ''} onClick={() => changeLocation('side')}><Boxes size={21} /><b>Side website</b><small>Creates a local DNS host with its own folder. Use <code>.localhost</code> with no Administrator, or map any name in Windows hosts.</small>{draft.location === 'side' && <Check size={15} />}</button></div>
+          <div className="wizard-fields"><label>Project name<input value={draft.projectName} onChange={(event) => updateProject(event.target.value)} /></label><label>DNS host<input disabled={draft.location === 'default'} value={draft.domain} onChange={(event) => { const domain = event.target.value; setDraft((old) => old ? { ...old, domain, updateHosts: automaticLocalhost(domain) ? false : old.updateHosts } : old) }} /></label></div>
+          <SiteAccessControls http={draft.http} https={draft.https} forceHttps={draft.forceHttps} updateHosts={draft.updateHosts} showHosts={draft.location === 'side' && !automaticLocalhost(draft.domain)} automaticDns={automaticLocalhost(draft.domain)} domain={draft.domain} onChange={(patch) => setDraft((old) => old ? { ...old, ...patch, forceHttps: patch.https === false || patch.http === false ? false : (patch.forceHttps ?? old.forceHttps) } : old)} />
+          {draft.https && <p className="wizard-certificate-note"><CircleAlert size={13} /> WeebX creates a local self-signed certificate. You can turn HTTPS off later from Installed apps. For a public deployment, replace the certificate with a trusted CA/ACME certificate.</p>}
+        </>}
+        {!completed && !installing && step === 1 && <><div className="wizard-heading"><span>02 · RUNTIME</span><h3>Compatibility, already handled.</h3><p>Required modules stay locked on. Add optional modules and choose the security policy that fits the app.</p></div><div className="runtime-picker"><label>PHP version<select value={draft.phpVersion} onChange={(event) => void changePhp(event.target.value)}>{compatibleVersions(selected).map((item) => <option key={item.version}>{item.version}</option>)}</select></label><div><span>Compatibility</span><b><Check size={13} /> PHP {selected.php.minimum}{selected.php.maximum ? `–${selected.php.maximum}` : '+'}</b></div><label>Environment<select value={draft.phpProfile ?? 'production'} onChange={(event) => setDraftField('phpProfile', event.target.value as 'production' | 'development')}><option value="production">Live / Production</option><option value="development">Development</option></select></label></div><div className="module-picker"><div><b>PHP modules</b><span>{draft.phpExtensions.length} enabled · {selected.php.requiredExtensions.length} required</span></div><div>{(profileOptions?.extensions ?? draft.phpExtensions).map((extension) => { const required = selected.php.requiredExtensions.includes(extension); const enabled = draft.phpExtensions.includes(extension); return <button key={extension} className={enabled ? 'on' : ''} disabled={required} title={required ? 'Required by this app' : 'Optional module'} onClick={() => setDraftField('phpExtensions', enabled ? draft.phpExtensions.filter((item) => item !== extension) : [...draft.phpExtensions, extension].sort())}><i>{enabled ? <Check size={10} /> : <Plus size={10} />}</i>{extension}{required && <small>required</small>}</button> })}</div></div><div className="wizard-toggles security-toggles"><Toggle checked={draft.disableDangerousFunctions !== false} onChange={(disableDangerousFunctions) => setDraftField('disableDangerousFunctions', disableDangerousFunctions)} label="Block PHP process-execution functions" /><Toggle checked={draft.allowUserIni === true} onChange={(allowUserIni) => setDraftField('allowUserIni', allowUserIni)} label="Allow app .user.ini overrides" /></div>{draft.phpProfile === 'development' && <p className="wizard-certificate-note danger-note"><CircleAlert size={13} /> Development mode displays error detail and is not suitable for a public site.</p>}{selected.database && <div className="wizard-fields database-wizard"><label>Database name<input value={draft.databaseName} onChange={(event) => setDraftField('databaseName', event.target.value)} /></label><label>Database username<input value={draft.databaseUsername} onChange={(event) => setDraftField('databaseUsername', event.target.value)} /></label><p><Database size={14} /> A unique per-app MariaDB login gets access to this database only. Its generated password is encrypted with your Windows credentials and never written to the audit log.</p></div>}</>}
+        {!completed && !installing && step === 2 && <><div className="wizard-heading"><span>03 · {needsAccount ? 'ACCOUNT & REVIEW' : 'REVIEW'}</span><h3>{needsAccount ? 'Create your administrator.' : selected.setup === 'automatic' ? 'Name this site, then install.' : 'Ready for a guided finish.'}</h3><p>{needsAccount ? 'These credentials go to the local installer. WeebX encrypts the administrator password with your Windows credentials and can reveal it, with the site and admin links, from Installed apps.' : selected.setup === 'automatic' ? 'No administrator account is required. Confirm the local DNS host and HTTPS settings, then install.' : 'WeebX prepares every server detail, then opens the app’s own setup screen for the final preferences.'}</p></div>{selected.setup === 'automatic' && <div className={`wizard-fields admin-fields${needsAccount ? '' : ' title-only'}`}><label>Site title<input value={draft.siteTitle} onChange={(event) => setDraftField('siteTitle', event.target.value)} /></label>{needsAccount && <label>Admin email<input type="email" value={draft.adminEmail} onChange={(event) => setDraftField('adminEmail', event.target.value)} /></label>}{needsAccount && <label>Admin username<input value={draft.adminUsername} onChange={(event) => setDraftField('adminUsername', event.target.value)} /></label>}{needsAccount && <SecretField label="Admin password" value={draft.adminPassword || ''} onChange={(value) => setDraftField('adminPassword', value)} action={<button type="button" onClick={() => setDraftField('adminPassword', browserStrongPassword())}><RefreshCw size={12} /> Regenerate</button>} />}</div>}<div className="review-edit"><span>Local DNS host & access</span><SiteAccessControls http={draft.http} https={draft.https} forceHttps={draft.forceHttps} updateHosts={draft.updateHosts} showHosts={draft.location === 'side' && !automaticLocalhost(draft.domain)} automaticDns={automaticLocalhost(draft.domain)} domain={draft.domain} onChange={(patch) => setDraft((old) => old ? { ...old, ...patch, forceHttps: patch.https === false || patch.http === false ? false : (patch.forceHttps ?? old.forceHttps) } : old)} /></div><div className="install-review"><div><span>Application</span><b>{selected.name} {selected.version}</b></div><div><span>Address</span><b>{draft.https ? 'https' : 'http'}://{draft.domain}</b></div><div><span>DNS host</span><b>{automaticLocalhost(draft.domain) ? `${draft.domain} · automatic` : draft.updateHosts ? `${draft.domain} · Windows hosts` : draft.domain}</b></div><div><span>HTTPS</span><b>{draft.https ? (draft.forceHttps ? 'On · redirect HTTP' : 'On') : 'Off'}</b></div><div><span>Runtime</span><b>PHP {draft.phpVersion} · {draft.phpExtensions.length} modules</b></div><div><span>Database</span><b>{selected.database ? draft.databaseName : 'Not required'}</b></div><div><span>Setup</span><b>{selected.setup === 'automatic' ? 'Fully automatic' : 'Browser-guided finish'}</b></div><div><span>License</span><b>{selected.license}</b></div></div><div className="preflight-panel"><div className="preflight-head"><ListChecks size={15} /><b>{checkingPreflight ? 'Checking requirements…' : preflight?.ready ? 'Ready to install' : 'Action required'}</b></div>{preflight?.checks.map((check) => <div className={`preflight-check ${check.status}`} key={check.id}>{check.status === 'ready' ? <Check size={13} /> : <CircleAlert size={13} />}<span><b>{check.title}</b><small>{check.detail}</small></span></div>)}{preflight?.suggestedProjectName && <button type="button" className="preflight-action" onClick={() => updateProject(preflight.suggestedProjectName!)}>Use “{preflight.suggestedProjectName}”</button>}{preflight?.requiresElevation && <button type="button" className="preflight-action admin" onClick={() => void window.weebx.restartAsAdministrator().catch((cause) => setWizardError(messageOf(cause)))}><ShieldCheck size={13} /> Restart WeebX as administrator</button>}</div><div className="install-notice"><ShieldCheck size={16} /><p>Downloaded over HTTPS from the project’s official distribution source. Extraction rejects path traversal and oversized archives. Failed installs are rolled back.</p></div></>}
+        {installing && <div className="install-progress-view"><div className="progress-orbit"><PackageOpen size={28} /><i style={{ '--app-progress': `${progress?.percent ?? 1}%` } as React.CSSProperties} /></div><span>{progress?.phase ?? 'starting'}</span><h3>{progress?.message ?? `Preparing ${selected.name}…`}</h3><p>{progress?.detail ?? 'Keep WeebX open while the application is being prepared.'}</p><div className="app-progress-track"><i style={{ width: `${progress?.percent ?? 1}%` }} /></div><b>{progress?.percent ?? 1}%</b></div>}
+        {completed && <div className="install-complete"><div><Check size={34} /></div><span>{completed.status === 'installed' ? 'INSTALLATION COMPLETE' : 'FILES & SERVER READY'}</span><h3>{completed.name} is {completed.status === 'installed' ? 'ready to use.' : 'ready to finish.'}</h3><p>{completed.status === 'installed' ? 'WeebX completed the application setup, site profile, and database configuration. Open Installed apps any time to reveal the site and admin links, administrator password, and database details.' : 'Open the official browser wizard to finish this app. DNS, database username, and the generated password are available from Installed apps.'}</p><button className="complete-url" onClick={() => window.weebx.openExternal(completed.setupUrl || completed.url)}>{completed.setupUrl || completed.url}<ExternalLink size={14} /></button><div className="complete-actions"><ActionButton icon={<FolderOpen size={15} />} label="Open files" onClick={() => window.weebx.openPath(completed.documentRoot)} /><ActionButton className="primary" icon={<ExternalLink size={15} />} label={completed.status === 'installed' ? 'Open website' : 'Finish setup'} onClick={() => window.weebx.openExternal(completed.setupUrl || completed.url)} /></div></div>}
+        {wizardError && !completed && <div className="wizard-error" role="alert"><CircleAlert size={15} /><span>{wizardError}</span><button type="button" aria-label="Dismiss error" onClick={() => setWizardError(null)}><X size={14} /></button></div>}
+        {!completed && !installing && <div className="wizard-actions"><button onClick={() => step === 0 ? setSelected(null) : setStep(step - 1)}>{step === 0 ? 'Cancel' : <><ChevronLeft size={14} /> Back</>}</button>{step < 2 ? <button className="primary" disabled={step === 0 ? !canContinueHost : !canContinueRuntime} onClick={() => setStep(step + 1)}>Continue <ChevronRight size={14} /></button> : <button className="primary install-now" disabled={checkingPreflight || !preflight?.ready || !canContinueAdmin} onClick={() => void install()}><Sparkles size={14} /> {checkingPreflight ? 'Checking…' : `Install ${selected.name}`}</button>}</div>}
+      </div></div></Modal>}
+
+    {removeTarget && <Modal title={`Uninstall ${removeTarget.name}`} onClose={() => !removing && setRemoveTarget(null)}><div className="uninstall-app-form"><div className="uninstall-warning"><Trash2 size={20} /><div><b>Choose which app data to delete.</b><p>The managed virtual host, database login, hosts entry, certificate, PHP profile, and logs are always cleaned. File removal is guarded by the ownership marker and htdocs boundary.</p></div></div><Toggle checked={removeChoices.removeFiles} onChange={(removeFiles) => setRemoveChoices({ ...removeChoices, removeFiles })} label={`Application files · ${removeTarget.documentRoot}`} />{removeTarget.databaseName && <Toggle checked={removeChoices.removeDatabase} onChange={(removeDatabase) => setRemoveChoices({ ...removeChoices, removeDatabase })} label={`Database data · ${removeTarget.databaseName}`} />}<div className="uninstall-managed"><ShieldCheck size={15} /><span>Always removed: virtual host and per-app database login for <b>{removeTarget.domain}</b></span></div><div className="modal-actions"><button onClick={() => setRemoveTarget(null)}>Cancel</button><ActionButton className="danger" working={removing} icon={<Trash2 size={14} />} label="Uninstall app" onClick={uninstall} /></div></div></Modal>}
+
+    {accessTarget && accessDraft && <Modal title={`Access · ${accessTarget.domain}`} onClose={() => !savingAccess && setAccessTarget(null)}><div className="uninstall-app-form access-edit-form"><div className="site-access-card"><div><Globe2 size={18} /><span><b>Local DNS host</b><small>{automaticLocalhost(accessTarget.domain) ? `${accessTarget.domain} resolves automatically on this PC. Change HTTP and HTTPS here without editing the Windows hosts file.` : `Treat ${accessTarget.domain} as a local DNS host. WeebX can map it in Windows hosts, or you can edit C:\\Windows\\System32\\drivers\\etc\\hosts (look for BEGIN WEEBX HOST).`}</small></span></div></div><SiteAccessControls http={accessDraft.http} https={accessDraft.https} forceHttps={accessDraft.forceHttps} updateHosts={accessDraft.updateHosts} showHosts={!automaticLocalhost(accessTarget.domain)} automaticDns={automaticLocalhost(accessTarget.domain)} domain={accessTarget.domain} onChange={(patch) => setAccessDraft((old) => old ? { ...old, ...patch, forceHttps: patch.https === false || patch.http === false ? false : (patch.forceHttps ?? old.forceHttps) } : old)} />{accessDraft.updateHosts && !automaticLocalhost(accessTarget.domain) && !data.elevated && <div className="modal-admin-note"><CircleAlert size={15} /><span><b>Administrator mode may be required</b><small>Windows requires approval to change the hosts file for this DNS host.</small></span><ActionButton icon={<ShieldCheck size={13} />} label="Restart as administrator" onClick={() => window.weebx.restartAsAdministrator().catch((cause) => setWizardError(messageOf(cause)))} /></div>}<div className="modal-actions"><button type="button" onClick={() => setAccessTarget(null)}>Cancel</button><ActionButton className="primary" working={savingAccess} icon={<Save size={14} />} label="Save access" onClick={async () => { setSavingAccess(true); try { const result = await run(() => window.weebx.updateInstalledAppAccess(accessTarget.id, accessDraft)); if (result) { setAccessTarget(null); await refreshApps() } } finally { setSavingAccess(false) } }} /></div></div></Modal>}
+  </>
+}
+
+function connectionRows(connection: PreinstalledAppConnection): Array<{ label: string; value: string; href?: boolean }> {
+  const links = connection.links?.length
+    ? connection.links
+    : [{ label: 'Website URL', url: connection.url }, ...(connection.setupUrl ? [{ label: 'Setup URL', url: connection.setupUrl }] : [])]
+  return [
+    { label: 'DNS / domain', value: connection.domain },
+    ...links.map((link) => ({ label: link.label, value: link.url, href: true })),
+    { label: 'Document root', value: connection.documentRoot },
+    { label: 'PHP', value: `${connection.phpVersion}${connection.phpProfile ? ` · ${connection.phpProfile}` : ''}` },
+    { label: 'Setup', value: connection.setup === 'automatic' ? 'Fully automatic' : 'Browser-guided finish' },
+    ...(connection.siteTitle ? [{ label: 'Site title', value: connection.siteTitle }] : []),
+    ...(connection.adminUsername ? [{ label: 'Admin username', value: connection.adminUsername }] : []),
+    ...(connection.adminEmail ? [{ label: 'Admin email', value: connection.adminEmail }] : []),
+    ...(connection.adminPassword ? [{ label: 'Admin password', value: connection.adminPassword }] : []),
+    ...(connection.database ? [
+      { label: 'Database host', value: `${connection.database.host}:${connection.database.port}` },
+      { label: 'Database name', value: connection.database.databaseName },
+      { label: 'Database username', value: connection.database.username },
+      { label: 'Database password', value: connection.database.password },
+      { label: 'Database access', value: connection.database.access }
+    ] : [{ label: 'Database', value: 'Not required' }])
+  ]
+}
+
+function appPhpCompatible(version: string, minimum: string, maximum?: string): boolean {
+  const number = (value: string) => { const [major, minor] = value.split('.').map(Number); return major * 100 + minor }
+  return number(version) >= number(minimum) && (!maximum || number(version) <= number(maximum))
 }
 
 const fallbackPhpReleases: PhpRelease[] = [
@@ -404,10 +620,9 @@ function SettingsPage({ settings, elevated, mariaDbRunning, run, focusPassword, 
     document.getElementById('mariadb-password')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     onFocusedPassword()
   }, [focusPassword, onFocusedPassword])
-  const choose = async (key: 'runtimeRoot' | 'htdocsRoot') => {
-    const path = await window.weebx.chooseDirectory()
-    if (!path) return false
-    setForm({ ...form, [key]: path })
+  const openStorageFolder = async (path: string) => {
+    if (!path.trim()) return false
+    return (await run(() => window.weebx.openPath(path.trim()), false)) !== undefined
   }
   const repair = async (pickFolder = false) => {
     if (!pickFolder) {
@@ -415,7 +630,7 @@ function SettingsPage({ settings, elevated, mariaDbRunning, run, focusPassword, 
       if (result) setRepairMessage(result.message)
       if (result?.repaired || result?.message.includes('current')) return true
     }
-    const path = await window.weebx.chooseDirectory()
+    const path = await window.weebx.chooseDirectory(form.runtimeRoot)
     if (!path) return false
     const result = await run(() => window.weebx.repairLocation(path))
     if (result) setRepairMessage(result.message)
@@ -466,7 +681,7 @@ function SettingsPage({ settings, elevated, mariaDbRunning, run, focusPassword, 
     return (await run(() => window.weebx.openPath(path), false)) !== undefined
   }
   return <div className="settings-layout"><div className="settings-main">
-    <div className="panel setting-block"><PanelTitle icon={<HardDrive size={17} />} title="Storage" /><label>Runtime directory<div className="input-action"><input value={form.runtimeRoot} onChange={(e) => setForm({ ...form, runtimeRoot: e.target.value })} /><ActionButton icon={<FolderOpen size={16} />} onClick={() => choose('runtimeRoot')} /></div></label><label>Document root<div className="input-action"><input value={form.htdocsRoot} onChange={(e) => setForm({ ...form, htdocsRoot: e.target.value })} /><ActionButton icon={<FolderOpen size={16} />} onClick={() => choose('htdocsRoot')} /></div></label></div>
+    <div className="panel setting-block"><PanelTitle icon={<HardDrive size={17} />} title="Storage" /><label>Runtime directory<div className="input-action"><input value={form.runtimeRoot} onChange={(e) => setForm({ ...form, runtimeRoot: e.target.value })} /><ActionButton icon={<FolderOpen size={16} />} title="Open this folder in File Explorer" onClick={() => openStorageFolder(form.runtimeRoot)} /></div></label><label>Document root<div className="input-action"><input value={form.htdocsRoot} onChange={(e) => setForm({ ...form, htdocsRoot: e.target.value })} /><ActionButton icon={<FolderOpen size={16} />} title="Open this folder in File Explorer" onClick={() => openStorageFolder(form.htdocsRoot)} /></div></label></div>
     <div className="panel setting-block permission-settings"><PanelTitle icon={<ShieldCheck size={17} />} title="Windows file permissions" /><p>Apply a safe NTFS preset. WeebX briefly stops affected services, updates only the selected stack folder, then starts them again.</p><div className="permission-controls"><label>Folder<select value={permissionTarget} onChange={(event) => setPermissionTarget(event.target.value as PermissionTarget)}><option value="htdocs">Websites (htdocs)</option><option value="database">MariaDB data</option><option value="runtime">Entire WeebX runtime</option></select></label><label>Preset<select value={permissionPreset} onChange={(event) => setPermissionPreset(event.target.value as PermissionPreset)}><option value="private">Private — current user, SYSTEM, admins</option><option value="writable">Owner writable — inherit Windows permissions</option><option value="windows-default">Reset to Windows inherited defaults</option></select></label><div className="permission-actions"><ActionButton icon={<FolderOpen size={14} />} title="Open folder for advanced Windows Security properties" onClick={openPermissionFolder} /><ActionButton className="primary" icon={<ShieldCheck size={14} />} label="Apply permissions" onClick={applyPermissions} /></div></div><small><b>Private</b> is recommended for databases and live sites. <b>Owner writable</b> is useful while developing. Advanced users can open the folder and use Windows Security properties for custom service accounts.</small>{permissionMessage && <span className="permission-result"><Check size={13} />{permissionMessage}</span>}</div>
     <div className="panel relocation-block"><PanelTitle icon={<Wrench size={17} />} title="Relocation repair" /><div><p>If you copied or moved WeebX, Fix automatically rebases Apache, MariaDB, PHP, certificates, and virtual-host paths.</p><div className="repair-actions"><ActionButton className="primary" icon={<Wrench size={15} />} label="Fix automatically" onClick={() => repair(false)} /><ActionButton icon={<FolderOpen size={15} />} label="Choose folder" onClick={() => repair(true)} /></div>{repairMessage && <span><Check size={14} /> {repairMessage}</span>}</div></div>
     <div className="panel setting-block"><PanelTitle icon={<Activity size={17} />} title="Network ports" /><div className="port-inputs"><label>HTTP<input type="number" value={form.apachePort} onChange={(e) => setForm({ ...form, apachePort: +e.target.value })} /></label><label>HTTPS<input type="number" value={form.apacheSslPort} onChange={(e) => setForm({ ...form, apacheSslPort: +e.target.value })} /></label><label className="mariadb-port">MariaDB<div className="input-action"><input type="number" value={form.mariadbPort} onChange={(e) => setForm({ ...form, mariadbPort: +e.target.value })} /><ActionButton className="primary" disabled={form.mariadbPort === settings.mariadbPort} icon={<RotateCw size={14} />} label="Update" onClick={updateMariaDbPort} /></div></label></div></div>
@@ -484,7 +699,7 @@ function SettingsPage({ settings, elevated, mariaDbRunning, run, focusPassword, 
     <div className="panel setting-block recovery-settings"><PanelTitle icon={<RefreshCw size={17} />} title="Crash recovery" /><p>Choose how long WeebX waits before restarting Apache or MariaDB after an unexpected exit.</p><label>Restart delay<select value={form.autoRestartDelayMs} onChange={(event) => setForm({ ...form, autoRestartDelayMs: Number(event.target.value) as RuntimeSettings['autoRestartDelayMs'] })}><option value={5000}>5 seconds</option><option value={10000}>10 seconds</option><option value={30000}>30 seconds</option><option value={60000}>1 minute</option><option value={300000}>5 minutes</option></select></label><div className="recovery-summary"><span className={form.autoRestartApache ? 'enabled' : ''}>Apache {form.autoRestartApache ? 'on' : 'off'}</span><span className={form.autoRestartMariaDb ? 'enabled' : ''}>MariaDB {form.autoRestartMariaDb ? 'on' : 'off'}</span></div></div>
     <div className="panel setting-block"><PanelTitle icon={<Settings size={17} />} title="Behavior" /><Toggle checked={form.startOnLaunch} onChange={(startOnLaunch) => setForm({ ...form, startOnLaunch })} label="Start Apache and MariaDB when WeebX opens" /><Toggle checked={form.startWithWindows} onChange={(startWithWindows) => setForm({ ...form, startWithWindows })} label="Automatically start WeebX on Windows startup" /><Toggle checked={form.minimizeToTray} onChange={(minimizeToTray) => setForm({ ...form, minimizeToTray })} label="Keep running in the notification area" /><Toggle checked={form.checkPortsBeforeStart} onChange={(checkPortsBeforeStart) => setForm({ ...form, checkPortsBeforeStart })} label="Check port ownership before starting" /></div>
     <ActionButton className="primary save-settings" icon={<Save size={16} />} label="Save settings" onClick={async () => (await run(() => window.weebx.updateSettings(form))) !== undefined} />
-  </div><aside className="settings-side"><div className={`admin-card ${elevated ? 'elevated' : ''}`}><ShieldCheck size={25} /><h3>{elevated ? 'Administrator mode' : 'Standard mode'}</h3><p>{elevated ? 'WeebX can update your Windows hosts file.' : 'Run as administrator when you want WeebX to map local domains automatically.'}</p></div><div className="panel links"><h3>Quick links</h3><ActionButton icon={<ExternalLink size={14} />} label="PHP documentation" hideLabelWhenBusy={false} onClick={() => window.weebx.openExternal('https://www.php.net/')} /><ActionButton icon={<ExternalLink size={14} />} label="Apache documentation" hideLabelWhenBusy={false} onClick={() => window.weebx.openExternal('https://httpd.apache.org/docs/2.4/')} /><ActionButton icon={<ExternalLink size={14} />} label="MariaDB documentation" hideLabelWhenBusy={false} onClick={() => window.weebx.openExternal('https://mariadb.com/kb/en/documentation/')} /></div></aside></div>
+  </div><aside className="settings-side"><div className={`admin-card ${elevated ? 'elevated' : ''}`}><ShieldCheck size={25} /><h3>{elevated ? 'Administrator mode' : 'Standard mode'}</h3><p>{elevated ? 'WeebX can update your Windows hosts file.' : 'Administrator mode lets the app wizard map local domains automatically.'}</p>{!elevated && <ActionButton className="admin-restart" icon={<ShieldCheck size={14} />} label="Restart as administrator" onClick={() => run(() => window.weebx.restartAsAdministrator(), false)} />}</div><div className="panel links"><h3>Quick links</h3><ActionButton icon={<ExternalLink size={14} />} label="PHP documentation" hideLabelWhenBusy={false} onClick={() => window.weebx.openExternal('https://www.php.net/')} /><ActionButton icon={<ExternalLink size={14} />} label="Apache documentation" hideLabelWhenBusy={false} onClick={() => window.weebx.openExternal('https://httpd.apache.org/docs/2.4/')} /><ActionButton icon={<ExternalLink size={14} />} label="MariaDB documentation" hideLabelWhenBusy={false} onClick={() => window.weebx.openExternal('https://mariadb.com/kb/en/documentation/')} /></div></aside></div>
 }
 
 function SecuritySetup({ run, error }: { run: Runner; error: string | null }) {
@@ -514,18 +729,32 @@ function SecuritySetup({ run, error }: { run: Runner; error: string | null }) {
 
 type Runner = <T>(operation: () => Promise<T>, after?: boolean) => Promise<T | undefined>
 function Logo() { return <div className="logo"><img src={logoUrl} alt="WeebX" /></div> }
-function AdminBadge({ elevated }: { elevated: boolean }) { return <div className={`admin-badge ${elevated ? 'on' : ''}`}><ShieldCheck size={15} />{elevated ? 'Admin' : 'Standard'}</div> }
+function AdminBadge({ elevated, onRestart }: { elevated: boolean; onRestart: () => Promise<unknown> }) {
+  if (elevated) return <div className="admin-badge on"><ShieldCheck size={15} />Admin</div>
+  return <button type="button" className="admin-badge admin-badge-action" title="Restart WeebX as administrator" onClick={() => void onRestart()}><ShieldCheck size={15} />Standard <ChevronRight size={12} /></button>
+}
 function PanelTitle({ icon, title, action }: { icon: ReactNode; title: string; action?: ReactNode }) { return <div className="panel-title"><div>{icon}<h3>{title}</h3></div>{action}</div> }
 function Empty({ text }: { text: string }) { return <div className="empty">{text}</div> }
 function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal${wide ? ' modal-wide' : ''}`}><div className="modal-head"><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></div>{children}</div></div> }
+function automaticLocalhost(domain: string): boolean {
+  const normalized = domain.trim().toLowerCase().replace(/\.$/, '')
+  return normalized === 'localhost' || normalized.endsWith('.localhost')
+}
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) { return <label className="toggle"><button type="button" role="switch" aria-checked={checked} className={checked ? 'on' : ''} onClick={() => onChange(!checked)}><i /></button><span>{label}</span></label> }
+function SiteAccessControls({ http, https, forceHttps, updateHosts, showHosts, automaticDns, domain, onChange }: { http: boolean; https: boolean; forceHttps?: boolean; updateHosts?: boolean; showHosts: boolean; automaticDns: boolean; domain: string; onChange: (patch: Partial<VhostAccessDraft>) => void }) {
+  return <div className="site-access-controls">
+    <div className="wizard-toggles"><Toggle checked={http} onChange={(next) => onChange({ http: next })} label="HTTP" /><Toggle checked={https} onChange={(next) => onChange({ https: next })} label="HTTPS with local certificate" />{http && https && <Toggle checked={forceHttps === true} onChange={(next) => onChange({ forceHttps: next })} label="Redirect HTTP to HTTPS" />}{showHosts && <Toggle checked={updateHosts === true} onChange={(next) => onChange({ updateHosts: next })} label="Map in Windows hosts (requires Administrator)" />}</div>
+    {automaticDns && <p className="wizard-certificate-note localhost-note"><ShieldCheck size={13} /> {domain || 'This name'} is a reserved local DNS host and resolves automatically to this PC. WeebX will not edit the Windows hosts file. You can change HTTP and HTTPS later from the app or Sites.</p>}
+    {showHosts && updateHosts && <p className="wizard-certificate-note"><CircleAlert size={13} /> WeebX will add a managed Windows hosts entry so this name works like a DNS host. You can edit or remove that block later from WeebX or from <code>C:\Windows\System32\drivers\etc\hosts</code> (look for <code># BEGIN WEEBX HOST</code>).</p>}
+  </div>
+}
 function SecretField({ label, value, onChange, placeholder, action }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; action?: ReactNode }) {
   const [visible, setVisible] = useState(false)
   const id = useId()
   useEffect(() => { if (!value) setVisible(false) }, [value])
   return <div className="secret-field"><div className="secret-label-row"><label htmlFor={id}>{label}</label>{action}</div><div className="secret-input"><LockKeyhole className="secret-lock" size={15} /><input id={id} type={visible ? 'text' : 'password'} value={value} placeholder={placeholder} autoComplete="new-password" spellCheck={false} onChange={(event) => onChange(event.target.value)} />{value !== '' && <button type="button" className="secret-eye" title={visible ? 'Hide password' : 'Show password'} aria-label={visible ? 'Hide password' : 'Show password'} onClick={() => setVisible((current) => !current)}>{visible ? <EyeOff size={15} /> : <Eye size={15} />}</button>}</div></div> }
 function FieldHint({ text, tip }: { text: string; tip: string }) {
-  return <span className="field-hint">{text}<button type="button" className="qmark" title={tip} aria-label={tip}>?</button></span>
+  return <span className="field-hint" data-tip={tip}>{text}<button type="button" className="qmark" aria-label={tip}>?</button></span>
 }
 function strongPassword(value: string): boolean {
   return value.length >= 12 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value) && /[^A-Za-z0-9]/.test(value)

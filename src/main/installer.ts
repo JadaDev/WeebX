@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto'
-import { access, cp, mkdir, open, readdir, rm, stat } from 'node:fs/promises'
+import { access, cp, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { InstallProgress, InstallRequest, InstallResult, PhpProfile, PhpRelease, PhpVersion } from '../shared/types'
@@ -10,6 +9,7 @@ import { runtimePaths } from './paths'
 import { isPhpMyAdminInstall, mariaDbHasData, preserveDuringUpdate, STACK_PRESERVE } from './stack-components'
 import { runMariaDbClient } from './mariadb-password'
 import { WEEBX_VERSION } from '../shared/version'
+import { downloadTrustedHttps, readTrustedHttps } from './secure-download'
 
 type ProgressListener = (progress: InstallProgress) => void
 const ALLOWED_DOWNLOAD_HOSTS = new Set(['downloads.php.net', 'windows.php.net', 'www.apachelounge.com', 'mirror.mariadb.org', 'archive.mariadb.org', 'files.phpmyadmin.net', 'www.phpmyadmin.net'])
@@ -38,27 +38,29 @@ export class Installer {
   async phpVersions(): Promise<PhpVersion[]> {
     const settings = await this.store.getSettings()
     const paths = runtimePaths(settings)
-    let installed: string[] = []
+    let versions: string[] = []
     try {
-      installed = (await readdir(paths.php, { withFileTypes: true })).filter((item) => item.isDirectory()).map((item) => item.name)
+      versions = (await readdir(paths.php, { withFileTypes: true })).filter((item) => item.isDirectory()).map((item) => item.name)
     } catch { /* empty */ }
-    return installed.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((version) => ({
-      version,
-      installed: installed.includes(version),
-      active: settings.activePhpVersion === version,
-      channel: version.startsWith('8.2') || version.startsWith('8.3') ? 'security' : 'stable',
-      path: installed.includes(version) ? join(paths.php, version) : undefined
+    return Promise.all(versions.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(async (version) => {
+      const folder = join(paths.php, version)
+      const installed = await exists(join(folder, 'php.exe')) && await exists(join(folder, 'php-cgi.exe'))
+      return {
+        version,
+        installed,
+        active: installed && settings.activePhpVersion === version,
+        channel: version.startsWith('8.2') || version.startsWith('8.3') ? 'security' as const : 'stable' as const,
+        path: installed ? folder : undefined
+      }
     }))
   }
 
   async discoverPhpReleases(): Promise<PhpRelease[]> {
     if (this.phpReleaseCache && this.phpReleaseCache.expires > Date.now()) return this.phpReleaseCache.releases
-    const response = await this.fetchTrusted('https://windows.php.net/downloads/releases/releases.json', { 'User-Agent': `Mozilla/5.0 WeebX/${WEEBX_VERSION}` })
-    if (!response.ok) throw new Error(`PHP release lookup failed: HTTP ${response.status}.`)
-    const length = Number(response.headers.get('content-length')) || 0
-    if (length > 2_000_000) throw new Error('The PHP release list is unexpectedly large.')
-    const text = await response.text()
-    if (text.length > 2_000_000) throw new Error('The PHP release list is unexpectedly large.')
+    const text = (await readTrustedHttps({
+      url: 'https://windows.php.net/downloads/releases/releases.json', allowedHosts: ALLOWED_DOWNLOAD_HOSTS,
+      maximumBytes: 2_000_000, headers: { 'User-Agent': `Mozilla/5.0 WeebX/${WEEBX_VERSION}` }
+    })).toString('utf8')
     let metadata: Record<string, unknown>
     try { metadata = JSON.parse(text) as Record<string, unknown> } catch { throw new Error('PHP returned an invalid release list.') }
 
@@ -177,7 +179,7 @@ export class Installer {
           filter: (file) => preserveDuringUpdate(source, file, preserved)
         })
       })
-      await this.withHeartbeat(request, 'configuring', 92, request.component === 'mariadb' && !dataExisted ? 'Initializing MariaDB system tables. This often takes 1-4 minutes...' : 'Keeping WeebX configuration and user data...', async () => {
+      await this.withHeartbeat(request, 'configuring', 92, request.component === 'mariadb' && !dataExisted ? 'Initializing MariaDB system tables...' : 'Keeping WeebX configuration and user data...', async () => {
         await this.configure(request, { updating, dataExisted })
       })
       this.emit(request, 'complete', 100, updating ? `${request.component} ${request.version} updated.` : `${request.component} ${request.version} installed.`)
@@ -216,46 +218,18 @@ export class Installer {
     this.emit(request, 'downloading', 0, `Downloading ${basename(new URL(request.url).pathname)}…`)
     const headers: Record<string, string> = { 'User-Agent': `Mozilla/5.0 WeebX/${WEEBX_VERSION}` }
     if (new URL(request.url).hostname === 'www.apachelounge.com') headers.Referer = 'https://www.apachelounge.com/download/'
-    const response = await this.fetchTrusted(request.url, headers)
-    if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}.`)
-    const total = Number(response.headers.get('content-length')) || 0
     const maximumBytes = 2 * 1024 * 1024 * 1024
-    if (total > maximumBytes) throw new Error('The component archive is unexpectedly large.')
-    const reader = response.body.getReader()
-    const file = await open(destination, 'w')
-    const hash = createHash('sha256')
-    let received = 0
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        await file.write(value)
-        hash.update(value)
-        received += value.byteLength
-        if (received > maximumBytes) throw new Error('The component archive exceeded the safe download limit.')
+    const result = await downloadTrustedHttps({
+      url: request.url, destination, allowedHosts: ALLOWED_DOWNLOAD_HOSTS, maximumBytes, headers,
+      onProgress: ({ receivedBytes, totalBytes }) => {
         const elapsed = Math.max(1, (Date.now() - this.downloadStartedAt) / 1000)
-        const etaSeconds = total > 0 && received > 0 ? Math.max(0, Math.ceil((elapsed / (received / total)) - elapsed)) : null
-        this.emit(request, 'downloading', total ? Math.min(99, Math.round(received / total * 100)) : 0, total ? `${Math.round(received / 1048576)} / ${Math.round(total / 1048576)} MB` : `${Math.round(received / 1048576)} MB`, {
-          completedBytes: received, totalBytes: total, etaSeconds, detail: 'Downloading from the official source'
+        const etaSeconds = totalBytes > 0 && receivedBytes > 0 ? Math.max(0, Math.ceil((elapsed / (receivedBytes / totalBytes)) - elapsed)) : null
+        this.emit(request, 'downloading', totalBytes ? Math.min(99, Math.round(receivedBytes / totalBytes * 100)) : 0, totalBytes ? `${Math.round(receivedBytes / 1048576)} / ${Math.round(totalBytes / 1048576)} MB` : `${Math.round(receivedBytes / 1048576)} MB`, {
+          completedBytes: receivedBytes, totalBytes, etaSeconds, detail: 'Downloading from the official source'
         })
       }
-    } finally { await file.close() }
-    return hash.digest('hex')
-  }
-
-  private async fetchTrusted(url: string, headers: Record<string, string>): Promise<Response> {
-    let current = new URL(url)
-    for (let redirect = 0; redirect <= 5; redirect += 1) {
-      if (current.protocol !== 'https:' || !ALLOWED_DOWNLOAD_HOSTS.has(current.hostname)) {
-        throw new Error('The download redirected to an untrusted host.')
-      }
-      const response = await fetch(current, { redirect: 'manual', headers })
-      if (![301, 302, 303, 307, 308].includes(response.status)) return response
-      const location = response.headers.get('location')
-      if (!location) throw new Error('The download returned an invalid redirect.')
-      current = new URL(location, current)
-    }
-    throw new Error('The download exceeded the redirect limit.')
+    })
+    return result.sha256
   }
 
   private targetFor(request: InstallRequest, settings: Awaited<ReturnType<JsonStore['getSettings']>>): string {

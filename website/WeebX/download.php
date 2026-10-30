@@ -1,19 +1,12 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . '_internal' . DIRECTORY_SEPARATOR . 'http-security.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . '_internal' . DIRECTORY_SEPARATOR . 'download-stats.php';
 
-header('X-Content-Type-Options: nosniff');
-header('Referrer-Policy: no-referrer');
-header('X-Frame-Options: DENY');
-header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'");
-
-$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-if (!in_array($method, ['GET', 'HEAD'], true)) {
-    header('Allow: GET, HEAD');
-    http_response_code(405);
-    exit('Method not allowed.');
-}
+sendBrowserSecurityHeaders("default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+header('X-Download-Options: noopen');
+$method = enforceReadOnlyRequestMethod();
 
 if (($_GET['stats'] ?? '') === '1') {
     header('Content-Type: application/json; charset=utf-8');
@@ -23,7 +16,7 @@ if (($_GET['stats'] ?? '') === '1') {
 }
 
 $requested = $_GET['file'] ?? '';
-if (!is_string($requested) || $requested === '' || basename($requested) !== $requested || preg_match('/\.(?:msi|zip)$/i', $requested) !== 1) {
+if (!is_string($requested) || !isAllowedDownloadFilename($requested)) {
     http_response_code(400);
     exit('Invalid download request.');
 }
@@ -36,7 +29,7 @@ if ($filesRoot === false || $filePath === false || !is_file($filePath) || !str_s
 }
 
 $size = filesize($filePath);
-if ($size === false) {
+if ($size === false || $size < 1) {
     http_response_code(500);
     exit('The download could not be read.');
 }
@@ -90,9 +83,10 @@ fseek($handle, $start);
 $remaining = ($end - $start) + 1;
 while ($remaining > 0 && !feof($handle)) {
     $chunk = fread($handle, min(1048576, $remaining));
-    if ($chunk === false) break;
+    if ($chunk === false || $chunk === '') break;
     echo $chunk;
     $remaining -= strlen($chunk);
     flush();
+    if (connection_aborted()) break;
 }
 fclose($handle);

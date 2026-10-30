@@ -1,12 +1,18 @@
 import { join } from 'node:path'
 import type { RuntimeSettings } from '../shared/types'
 
+export function opensslProcessEnv(opensslConf: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...env, OPENSSL_CONF: opensslConf }
+}
+
 export function runtimePaths(settings: RuntimeSettings) {
   const root = settings.runtimeRoot
   return {
     root,
     apache: join(root, 'apache'),
     apacheExe: join(root, 'apache', 'bin', 'httpd.exe'),
+    opensslExe: join(root, 'apache', 'bin', 'openssl.exe'),
+    opensslConf: join(root, 'apache', 'conf', 'openssl.cnf'),
     apacheConf: join(root, 'apache', 'conf', 'httpd.conf'),
     vhostsConf: join(root, 'apache', 'conf', 'extra', 'httpd-vhosts.conf'),
     mariadb: join(root, 'mariadb'),

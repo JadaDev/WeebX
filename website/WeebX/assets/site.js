@@ -1,5 +1,4 @@
 (() => {
-  const body = document.body
   const dialog = document.querySelector('#download-consent')
   const fileName = document.querySelector('#consent-file')
   const terms = document.querySelector('#accept-terms')
@@ -23,9 +22,6 @@
     }
   }
 
-  const finishLoading = () => window.setTimeout(() => body.classList.add('loaded'), 320)
-  if (document.readyState === 'complete') finishLoading()
-  else window.addEventListener('load', finishLoading, { once: true })
   void refreshDownloadCounts()
 
   if (!(dialog instanceof HTMLDialogElement) || !(terms instanceof HTMLInputElement) || !(privacy instanceof HTMLInputElement) || !(downloadButton instanceof HTMLButtonElement)) return
@@ -53,7 +49,11 @@
       pendingDownload = { href: link.href, name: link.dataset.file || 'WeebX' }
       if (fileName) fileName.textContent = pendingDownload.name
       resetConsent()
-      dialog.showModal()
+      try {
+        dialog.showModal()
+      } catch {
+        window.location.assign(pendingDownload.href)
+      }
     })
   })
 

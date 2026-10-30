@@ -1,6 +1,6 @@
 {
   "name": "weebx",
-  "version": "2.1.1",
+  "version": "2.2.15",
   "description": "A Local Web Hosting Stack Manager for Windows with Apache, PHP and MariaDB",
   "main": "out/main/index.js",
   "author": "JadaDev",
@@ -16,14 +16,16 @@
     "prepare:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-runtime.ps1",
     "dist": "npm run dist:msi",
     "dist:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-production-release.ps1",
-    "dist:unsigned": "npm run build && electron-builder --win msi --x64 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/assemble-release.ps1"
+    "dist:unsigned": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-unsigned-release.ps1"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@fortawesome/free-brands-svg-icons": "^7.3.1",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "simple-icons": "^15.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
@@ -42,8 +44,10 @@
     "appId": "com.jadadev.weebx",
     "productName": "WeebX",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
+    "msiProjectCreated": "./scripts/msi-project-created.cjs",
     "files": [
       "out/**/*",
       "package.json"
@@ -51,7 +55,11 @@
     "extraResources": [
       {
         "from": "resources/runtime",
-        "to": "runtime"
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!apache/logs/**/*"
+        ]
       },
       {
         "from": "build/assets/weebx-logo.png",
@@ -74,6 +82,7 @@
     ],
     "win": {
       "target": [
+        "nsis",
         "msi"
       ],
       "icon": "build/assets/weebx.ico",
@@ -82,15 +91,28 @@
     },
     "msi": {
       "oneClick": false,
-      "perMachine": false,
+      "perMachine": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "warningsAsErrors": true
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/assets/weebx.ico",
+      "uninstallerIcon": "build/assets/weebx.ico",
+      "installerHeader": "build/installer/header.bmp",
+      "installerSidebar": "build/installer/sidebar.bmp",
+      "uninstallerSidebar": "build/installer/sidebar.bmp",
+      "license": "build/installer/license.rtf",
+      "include": "build/installer.nsh"
     }
   }
 }

@@ -1,17 +1,27 @@
-import { access, appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { access, appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { RuntimeSettings, SiteIsolationDraft, VhostDraft, VirtualHost } from '../shared/types'
+import type { RuntimeSettings, SiteIsolationDraft, VhostAccessDraft, VhostDraft, VirtualHost } from '../shared/types'
+import { windowsHostsPath } from './windows-hosts'
 import type { JsonStore } from './store'
 import type { ConfigManager } from './config-manager'
 import type { LogBuffer } from './logs'
-import { runtimePaths } from './paths'
+import { opensslProcessEnv, runtimePaths } from './paths'
 import { dropSiteDatabaseUser, normalizeSiteIsolation, provisionSiteDatabase, siteProfilePaths, writeSitePhpIni } from './site-profile'
 
 const execFileAsync = promisify(execFile)
 const BEGIN = '# BEGIN WEEBX MANAGED VHOSTS'
 const END = '# END WEEBX MANAGED VHOSTS'
+
+export function vhostPlaceholderHtml(serverName: string): string {
+  return `<?php declare(strict_types=1); ?><h1>${serverName}</h1><p>Served by WeebX · PHP <?= PHP_VERSION ?></p>`
+}
+
+function automaticLocalhost(domain: string): boolean {
+  const normalized = domain.trim().toLowerCase().replace(/\.$/, '')
+  return normalized === 'localhost' || normalized.endsWith('.localhost')
+}
 
 function validHostname(value: string): boolean {
   return value.length <= 253 && /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(value)
@@ -25,6 +35,25 @@ function cleanName(value: string): string {
   return clean
 }
 
+export function opensslSelfSignedArgs(input: {
+  opensslConf: string
+  keyOut: string
+  certOut: string
+  serverName: string
+  aliases?: string[]
+}): string[] {
+  const names = [input.serverName, ...(input.aliases ?? [])]
+  return [
+    'req', '-x509', '-nodes', '-newkey', 'rsa:2048',
+    '-config', input.opensslConf,
+    '-keyout', input.keyOut,
+    '-out', input.certOut,
+    '-days', '825',
+    '-subj', `/CN=${input.serverName}`,
+    '-addext', `subjectAltName=DNS:${names.join(',DNS:')}`
+  ]
+}
+
 function assertStoredVhost(vhost: VirtualHost, settings: RuntimeSettings): void {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(vhost.id)) throw new Error('A saved virtual host has an invalid identifier.')
   cleanName(vhost.name)
@@ -33,6 +62,13 @@ function assertStoredVhost(vhost: VirtualHost, settings: RuntimeSettings): void 
   const documentRoot = resolve(vhost.documentRoot)
   const documentRelative = relative(resolve(settings.htdocsRoot), documentRoot)
   if (documentRelative.startsWith('..') || isAbsolute(documentRelative)) throw new Error('A saved virtual host points outside htdocs.')
+  if (vhost.applicationRoot) {
+    const applicationRoot = resolve(vhost.applicationRoot)
+    const applicationRelative = relative(resolve(settings.htdocsRoot), applicationRoot)
+    if (applicationRelative.startsWith('..') || isAbsolute(applicationRelative) || (relative(applicationRoot, documentRoot).startsWith('..'))) {
+      throw new Error('A saved virtual host has an invalid private application root.')
+    }
+  }
 }
 
 export class VhostManager {
@@ -60,10 +96,13 @@ export class VhostManager {
     if (documentRelative.startsWith('..') || isAbsolute(documentRelative)) {
       throw new Error('Virtual-host document roots must stay inside the configured htdocs folder.')
     }
-    await mkdir(documentRoot, { recursive: true })
-    const indexFile = join(documentRoot, 'index.php')
-    try { await access(indexFile) } catch {
-      await writeFile(indexFile, `<?php declare(strict_types=1); ?><h1>${serverName}</h1><p>Served by WeebX · PHP <?= PHP_VERSION ?></p>`, 'utf8')
+    const applicationRoot = draft.applicationRoot ? resolve(draft.applicationRoot) : undefined
+    if (applicationRoot) {
+      const applicationRelative = relative(resolve(settings.htdocsRoot), applicationRoot)
+      const publicRelative = relative(applicationRoot, documentRoot)
+      if (applicationRelative.startsWith('..') || isAbsolute(applicationRelative) || publicRelative.startsWith('..') || isAbsolute(publicRelative)) {
+        throw new Error('The private application root must contain the public document root and stay inside htdocs.')
+      }
     }
     const id = crypto.randomUUID()
     const normalized = draft.isolation ? await normalizeSiteIsolation(settings, draft.isolation) : undefined
@@ -72,24 +111,42 @@ export class VhostManager {
     }
     const vhost: VirtualHost = {
       id, name, serverName, aliases, documentRoot,
-      http: draft.http, https: draft.https, enabled: true, createdAt: new Date().toISOString()
+      ...(applicationRoot ? { applicationRoot } : {}),
+      http: draft.http, https: draft.https, forceHttps: draft.forceHttps === true && draft.http && draft.https,
+      setupRestricted: draft.setupRestricted === true, enabled: true, createdAt: new Date().toISOString()
     }
     if (normalized) vhost.isolation = normalized.profile
-    if (vhost.https) await this.ensureCertificate(vhost)
-    if (vhost.isolation) {
-      await writeSitePhpIni(settings, vhost)
-      if (vhost.isolation.database && normalized?.databasePassword) {
-        await provisionSiteDatabase(settings, vhost.isolation, normalized.databasePassword, false)
-        try { await this.store.setSiteDatabasePassword(id, normalized.databasePassword) }
-        catch (error) {
-          await dropSiteDatabaseUser(settings, vhost.isolation).catch(() => undefined)
-          throw error
+    let databaseProvisioned = false
+    const indexFile = join(documentRoot, 'index.php')
+    let indexCreated = false
+    try {
+      if (draft.updateHosts) vhost.managedHosts = await this.addHosts(vhost.id, [serverName, ...aliases])
+      await mkdir(documentRoot, { recursive: true })
+      try { await access(indexFile) } catch {
+        await writeFile(indexFile, vhostPlaceholderHtml(serverName), 'utf8')
+        indexCreated = true
+      }
+      if (vhost.https) await this.ensureCertificate(vhost)
+      if (vhost.isolation) {
+        await writeSitePhpIni(settings, vhost)
+        if (vhost.isolation.database && normalized?.databasePassword) {
+          await provisionSiteDatabase(settings, vhost.isolation, normalized.databasePassword, false)
+          databaseProvisioned = true
+          await this.store.setSiteDatabasePassword(id, normalized.databasePassword)
         }
       }
+      await this.store.setVhosts([...existing, vhost])
+      await this.render()
+    } catch (error) {
+      if (vhost.managedHosts?.length) await this.removeHosts(vhost.id).catch(() => undefined)
+      if (databaseProvisioned && vhost.isolation?.database) await dropSiteDatabaseUser(settings, vhost.isolation).catch(() => undefined)
+      await this.store.deleteSiteDatabasePassword(id).catch(() => undefined)
+      await this.store.setVhosts(existing).catch(() => undefined)
+      if (indexCreated) await rm(indexFile, { force: true }).catch(() => undefined)
+      await rm(join(settings.runtimeRoot, 'site-profiles', vhost.name), { recursive: true, force: true }).catch(() => undefined)
+      await rm(join(settings.runtimeRoot, 'certificates', vhost.name), { recursive: true, force: true }).catch(() => undefined)
+      throw error
     }
-    await this.store.setVhosts([...existing, vhost])
-    await this.render()
-    if (draft.updateHosts) await this.addHosts([serverName, ...aliases])
     this.logs.add('system', 'info', `Created virtual host ${serverName}.`)
     return vhost
   }
@@ -98,11 +155,25 @@ export class VhostManager {
     const all = await this.store.getVhosts()
     const target = all.find((item) => item.id === id)
     if (!target) return
-    if (target.isolation?.database) await dropSiteDatabaseUser(await this.store.getSettings(), target.isolation)
+    const settings = await this.store.getSettings()
+    if (target.managedHosts?.length) await this.removeHosts(target.id)
+    if (target.isolation?.database) await dropSiteDatabaseUser(settings, target.isolation)
     await this.store.setVhosts(all.filter((item) => item.id !== id))
     await this.store.deleteSiteDatabasePassword(id)
     await this.render()
+    await rm(join(settings.runtimeRoot, 'site-profiles', target.name), { recursive: true, force: true })
+    await rm(join(settings.runtimeRoot, 'certificates', target.name), { recursive: true, force: true })
     this.logs.add('system', 'info', `Removed virtual host ${target.serverName}; its document root was preserved.`)
+  }
+
+  async setSetupRestricted(id: string, restricted: boolean): Promise<VirtualHost> {
+    const all = await this.store.getVhosts()
+    const target = all.find((item) => item.id === id)
+    if (!target) throw new Error('Virtual host not found.')
+    target.setupRestricted = restricted
+    await this.store.setVhosts(all)
+    await this.render()
+    return target
   }
 
   async updateProfile(id: string, draft?: SiteIsolationDraft): Promise<VirtualHost> {
@@ -154,6 +225,32 @@ export class VhostManager {
     return target
   }
 
+  async updateAccess(id: string, draft: VhostAccessDraft): Promise<VirtualHost> {
+    if (!draft?.http && !draft?.https) throw new Error('Enable HTTP, HTTPS, or both.')
+    if (draft.forceHttps && (!draft.http || !draft.https)) throw new Error('HTTPS redirection requires both HTTP and HTTPS to be enabled.')
+    const all = await this.store.getVhosts()
+    const target = all.find((item) => item.id === id)
+    if (!target) throw new Error('Virtual host not found.')
+    target.http = draft.http
+    target.https = draft.https
+    target.forceHttps = draft.forceHttps === true && draft.http && draft.https
+    if (target.https) await this.ensureCertificate(target)
+    const autoDns = automaticLocalhost(target.serverName) && target.aliases.every((alias) => automaticLocalhost(alias))
+    if (!autoDns && draft.updateHosts === true) {
+      const added = await this.addHosts(target.id, [target.serverName, ...target.aliases])
+      target.managedHosts = [...new Set([...(target.managedHosts ?? []), ...added])]
+      if (!target.managedHosts.length) delete target.managedHosts
+    }
+    if (!autoDns && draft.updateHosts === false && target.managedHosts?.length) {
+      await this.removeHosts(target.id)
+      delete target.managedHosts
+    }
+    await this.store.setVhosts(all)
+    await this.render()
+    this.logs.add('system', 'info', `Updated access for ${target.serverName}: HTTP ${target.http ? 'on' : 'off'}, HTTPS ${target.https ? 'on' : 'off'}.`)
+    return target
+  }
+
   async setEnabled(id: string, enabled: boolean): Promise<VirtualHost> {
     const all = await this.store.getVhosts()
     const target = all.find((item) => item.id === id)
@@ -193,9 +290,17 @@ export class VhostManager {
       '        Require all granted',
       ...(vhost.isolation ? ['        AddHandler application/x-httpd-php .php'] : []),
       '    </Directory>',
+      '    Header always set X-Content-Type-Options "nosniff"',
+      '    Header always set Referrer-Policy "strict-origin-when-cross-origin"',
+      '    Header always set X-Frame-Options "SAMEORIGIN"',
+      '    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"',
+      ...(vhost.setupRestricted ? ['    <Location />', '        Require local', '    </Location>'] : []),
       ...profile
     ]
-    if (vhost.http) lines.push(`<VirtualHost *:${settings.apachePort}>`, ...common, '</VirtualHost>')
+    if (vhost.http && vhost.forceHttps && vhost.https) {
+      const sslPort = settings.apacheSslPort === 443 ? '' : `:${settings.apacheSslPort}`
+      lines.push(`<VirtualHost *:${settings.apachePort}>`, `    ServerName ${vhost.serverName}`, ...(vhost.aliases.length ? [`    ServerAlias ${vhost.aliases.join(' ')}`] : []), `    Redirect permanent / https://${vhost.serverName}${sslPort}/`, '</VirtualHost>')
+    } else if (vhost.http) lines.push(`<VirtualHost *:${settings.apachePort}>`, ...common, '</VirtualHost>')
     if (vhost.https) {
       const cert = this.certPaths(vhost, settings.runtimeRoot)
       lines.push(`<VirtualHost *:${settings.apacheSslPort}>`, ...common, '    SSLEngine on', `    SSLCertificateFile "${cert.crt.replace(/\\/g, '/')}"`, `    SSLCertificateKeyFile "${cert.key.replace(/\\/g, '/')}"`, '</VirtualHost>')
@@ -232,9 +337,16 @@ export class VhostManager {
     const cert = this.certPaths(vhost, settings.runtimeRoot)
     try { await access(cert.crt); await access(cert.key); return } catch { /* create */ }
     await mkdir(dirname(cert.crt), { recursive: true })
-    const openssl = join(paths.apache, 'bin', 'openssl.exe')
+    try { await access(paths.opensslExe) } catch {
+      throw new Error('Could not create the HTTPS certificate. Install Apache first or disable HTTPS.')
+    }
+    try { await access(paths.opensslConf) } catch {
+      throw new Error("Could not create the HTTPS certificate because Apache's OpenSSL configuration is missing. Reinstall Apache or disable HTTPS.")
+    }
     try {
-      await execFileAsync(openssl, ['req', '-x509', '-nodes', '-newkey', 'rsa:2048', '-keyout', cert.key, '-out', cert.crt, '-days', '825', '-subj', `/CN=${vhost.serverName}`, '-addext', `subjectAltName=DNS:${[vhost.serverName, ...vhost.aliases].join(',DNS:')}`], { windowsHide: true })
+      await execFileAsync(paths.opensslExe, opensslSelfSignedArgs({
+        opensslConf: paths.opensslConf, keyOut: cert.key, certOut: cert.crt, serverName: vhost.serverName, aliases: vhost.aliases
+      }), { windowsHide: true, env: opensslProcessEnv(paths.opensslConf) })
     } catch (error) {
       throw new Error(`Could not create the HTTPS certificate. Install Apache first or disable HTTPS. ${error instanceof Error ? error.message : ''}`)
     }
@@ -245,13 +357,35 @@ export class VhostManager {
     return { crt: join(folder, 'server.crt'), key: join(folder, 'server.key') }
   }
 
-  private async addHosts(hosts: string[]): Promise<void> {
-    if (process.platform !== 'win32') return
-    const file = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\drivers\\etc\\hosts`
+  private async addHosts(id: string, hosts: string[]): Promise<string[]> {
+    if (process.platform !== 'win32') return []
+    const file = windowsHostsPath()
+    const missing = await this.hostsNeedingUpdate(hosts)
+    if (!missing.length) return []
+    try { await appendFile(file, `\r\n# BEGIN WEEBX HOST ${id}\r\n127.0.0.1 ${missing.join(' ')}\r\n# END WEEBX HOST ${id}\r\n`, 'utf8') }
+    catch { throw new Error('Updating the Windows hosts file requires Administrator mode. No virtual host was saved. Restart WeebX as administrator and try again.') }
+    return missing
+  }
+
+  async hostsNeedingUpdate(hosts: string[]): Promise<string[]> {
+    if (process.platform !== 'win32') return []
+    const file = windowsHostsPath()
     const current = await readFile(file, 'utf8')
-    const missing = hosts.filter((host) => !new RegExp(`^\\s*(?:127\\.0\\.0\\.1|::1)\\s+.*(?:\\s|^)${host.replace(/\./g, '\\.')}(?:\\s|$)`, 'mi').test(current))
-    if (!missing.length) return
-    try { await appendFile(file, `\r\n# WeebX\r\n127.0.0.1 ${missing.join(' ')}\r\n`, 'utf8') }
-    catch { throw new Error('The virtual host was created, but updating the Windows hosts file requires running WeebX as administrator.') }
+    return hosts.filter((host) => {
+      const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      return !new RegExp(`^\\s*(?:127\\.0\\.0\\.1|::1)\\s+.*(?:\\s|^)${escaped}(?:\\s|$)`, 'mi').test(current)
+    })
+  }
+
+  private async removeHosts(id: string): Promise<void> {
+    if (process.platform !== 'win32') return
+    const file = windowsHostsPath()
+    const current = await readFile(file, 'utf8')
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const managed = new RegExp(`(?:\\r?\\n)?# BEGIN WEEBX HOST ${escaped}\\r?\\n[\\s\\S]*?# END WEEBX HOST ${escaped}(?:\\r?\\n)?`, 'g')
+    const next = current.replace(managed, '\r\n')
+    if (next === current) return
+    try { await writeFile(file, next, 'utf8') }
+    catch { throw new Error('Removing the Windows hosts entry requires running WeebX as administrator.') }
   }
 }

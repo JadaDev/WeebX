@@ -28,8 +28,16 @@ export interface VirtualHost {
   serverName: string
   aliases: string[]
   documentRoot: string
+  /** Optional private application root when the public web root is a child folder. */
+  applicationRoot?: string
   http: boolean
   https: boolean
+  /** Redirect the HTTP listener to this host's HTTPS listener. */
+  forceHttps?: boolean
+  /** While an upstream browser installer is unfinished, only the local machine may connect. */
+  setupRestricted?: boolean
+  /** Hostnames that WeebX itself added to the Windows hosts file. */
+  managedHosts?: string[]
   enabled: boolean
   createdAt: string
   isolation?: SiteIsolationProfile
@@ -169,6 +177,150 @@ export interface DashboardSnapshot {
   elevated: boolean
 }
 
+export type PreinstalledAppCategory = 'cms' | 'community' | 'commerce' | 'analytics' | 'learning' | 'collaboration' | 'gallery' | 'developer'
+export type PreinstalledAppSetup = 'automatic' | 'browser'
+export type PreinstalledAppLocation = 'default' | 'side'
+export type PreinstalledAppStatus = 'installing' | 'installed' | 'needs-setup' | 'failed' | 'removed'
+
+export interface PreinstalledAppCatalogItem {
+  id: string
+  name: string
+  description: string
+  category: PreinstalledAppCategory
+  version: string
+  license: string
+  website: string
+  setup: PreinstalledAppSetup
+  setupSummary: string
+  /** When false, automatic apps skip administrator account fields (pastebins, git viewers). */
+  account?: boolean
+  database: boolean
+  php: {
+    minimum: string
+    maximum?: string
+    recommended: string
+    requiredExtensions: string[]
+    recommendedExtensions: string[]
+  }
+}
+
+export interface PreinstalledAppRecord {
+  id: string
+  catalogId: string
+  name: string
+  version: string
+  status: PreinstalledAppStatus
+  location: PreinstalledAppLocation
+  siteId: string
+  projectName: string
+  domain: string
+  url: string
+  documentRoot: string
+  phpVersion: string
+  phpExtensions: string[]
+  phpProfile?: PhpProfile
+  forceHttps?: boolean
+  setupRestricted?: boolean
+  setup?: PreinstalledAppSetup
+  databaseName?: string
+  databaseUsername?: string
+  siteTitle?: string
+  adminUsername?: string
+  adminEmail?: string
+  adminPath?: string
+  setupUrl?: string
+  backupPath?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PreinstalledAppConnectionLink {
+  label: string
+  url: string
+}
+
+export interface PreinstalledAppConnection {
+  installId: string
+  catalogId: string
+  name: string
+  version: string
+  setup: PreinstalledAppSetup
+  status: PreinstalledAppStatus
+  domain: string
+  url: string
+  setupUrl?: string
+  links: PreinstalledAppConnectionLink[]
+  documentRoot: string
+  phpVersion: string
+  phpProfile?: PhpProfile
+  siteTitle?: string
+  adminUsername?: string
+  adminEmail?: string
+  adminPassword?: string
+  database?: SiteDatabaseCredential
+}
+
+export interface PreinstalledAppInstallRequest {
+  catalogId: string
+  location: PreinstalledAppLocation
+  projectName: string
+  domain: string
+  http: boolean
+  https: boolean
+  forceHttps?: boolean
+  updateHosts: boolean
+  phpVersion: string
+  phpExtensions: string[]
+  phpProfile?: PhpProfile
+  disableDangerousFunctions?: boolean
+  allowUserIni?: boolean
+  databaseName?: string
+  databaseUsername?: string
+  siteTitle?: string
+  adminUsername?: string
+  adminPassword?: string
+  adminEmail?: string
+}
+
+export interface PreinstalledAppPreflightCheck {
+  id: 'request' | 'destination' | 'domain' | 'hosts' | 'services'
+  status: 'ready' | 'warning' | 'blocked'
+  title: string
+  detail: string
+}
+
+export interface PreinstalledAppPreflight {
+  ready: boolean
+  requiresElevation: boolean
+  suggestedProjectName?: string
+  checks: PreinstalledAppPreflightCheck[]
+}
+
+export interface PreinstalledAppUninstallOptions {
+  removeFiles: boolean
+  removeDatabase: boolean
+  removeSite: boolean
+}
+
+export interface PreinstalledAppProgress {
+  installId: string
+  catalogId: string
+  phase: 'validating' | 'downloading' | 'extracting' | 'provisioning' | 'configuring' | 'restarting' | 'complete' | 'error'
+  percent: number
+  message: string
+  detail?: string
+}
+
+export interface PreinstalledAppActivity {
+  id: string
+  installId: string
+  catalogId: string
+  timestamp: string
+  level: 'info' | 'warn' | 'error'
+  phase: PreinstalledAppProgress['phase'] | 'uninstall'
+  message: string
+}
+
 export interface InstallResult {
   updated: boolean
   mariaDbNeedsUpgrade: boolean
@@ -240,13 +392,23 @@ export interface PortalResult {
   folder: string
 }
 
+export interface VhostAccessDraft {
+  http: boolean
+  https: boolean
+  forceHttps?: boolean
+  updateHosts?: boolean
+}
+
 export interface VhostDraft {
   name: string
   serverName: string
   aliases: string[]
   documentRoot?: string
+  applicationRoot?: string
   http: boolean
   https: boolean
+  forceHttps?: boolean
+  setupRestricted?: boolean
   updateHosts: boolean
   isolation?: SiteIsolationDraft
 }
@@ -294,16 +456,27 @@ export interface WeebXApi {
   onStatus(callback: (status: ServiceStatus) => void): () => void
   onInstallProgress(callback: (progress: InstallProgress) => void): () => void
   onPreparationProgress(callback: (progress: PreparationProgress) => void): () => void
+  preinstalledAppCatalog(): Promise<PreinstalledAppCatalogItem[]>
+  installedApps(): Promise<PreinstalledAppRecord[]>
+  preflightPreinstalledApp(request: PreinstalledAppInstallRequest): Promise<PreinstalledAppPreflight>
+  installPreinstalledApp(request: PreinstalledAppInstallRequest): Promise<PreinstalledAppRecord>
+  completePreinstalledAppSetup(id: string): Promise<PreinstalledAppRecord>
+  uninstallPreinstalledApp(id: string, options: PreinstalledAppUninstallOptions): Promise<PreinstalledAppRecord>
+  preinstalledAppActivity(installId?: string): Promise<PreinstalledAppActivity[]>
+  onPreinstalledAppProgress(callback: (progress: PreinstalledAppProgress) => void): () => void
   readConfig(kind: 'php' | 'apache' | 'vhosts' | 'mariadb'): Promise<string>
   saveConfig(kind: 'php' | 'apache' | 'vhosts' | 'mariadb', content: string): Promise<void>
   validateConfig(kind: 'php' | 'apache' | 'mariadb'): Promise<{ ok: boolean; output: string }>
   listVhosts(): Promise<VirtualHost[]>
   createVhost(draft: VhostDraft): Promise<VirtualHost>
   updateVhostProfile(id: string, isolation?: SiteIsolationDraft): Promise<VirtualHost>
+  updateVhostAccess(id: string, access: VhostAccessDraft): Promise<VirtualHost>
   deleteVhost(id: string): Promise<void>
   setVhostEnabled(id: string, enabled: boolean): Promise<VirtualHost>
+  updateInstalledAppAccess(id: string, access: VhostAccessDraft): Promise<PreinstalledAppRecord>
   siteProfileOptions(version: string): Promise<SiteProfileOptions>
   revealSiteDatabasePassword(id: string): Promise<SiteDatabaseCredential | null>
+  revealInstalledAppConnection(id: string): Promise<PreinstalledAppConnection | null>
   readSiteLog(id: string, kind: SiteLogKind): Promise<SiteLogSnapshot>
   selectPhp(version: string): Promise<void>
   setPhpProfile(profile: PhpProfile): Promise<void>
@@ -315,11 +488,12 @@ export interface WeebXApi {
   repairLocation(path?: string): Promise<RelocationResult>
   openPath(path: string): Promise<void>
   openExternal(url: string): Promise<void>
-  chooseDirectory(): Promise<string | null>
+  chooseDirectory(startPath?: string): Promise<string | null>
   completeSecuritySetup(password: string): Promise<PublicRuntimeSettings>
   changeMariaDbPassword(password: string): Promise<PublicRuntimeSettings>
   revealMariaDbPassword(): Promise<MariaDbPasswordReveal | null>
   setPermissions(target: PermissionTarget, preset: PermissionPreset): Promise<PermissionResult>
+  restartAsAdministrator(): Promise<void>
   isUninstall: boolean
   onOpenUninstall(callback: () => void): () => void
   uninstallStatus(): Promise<{ apache: boolean; mariadb: boolean; weebx: boolean }>

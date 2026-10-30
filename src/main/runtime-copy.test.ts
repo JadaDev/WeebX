@@ -67,6 +67,16 @@ describe('runtime copy directory preparation', () => {
     expect(value).toBe('readable')
   })
 
+  it('can retry an operation-specific transient error code', async () => {
+    let attempts = 0
+    await expect(retryFileOperation(async () => {
+      attempts += 1
+      if (attempts === 1) throw Object.assign(new Error('parent temporarily missing'), { code: 'ENOENT' })
+      return 'created'
+    }, { initialDelayMs: 1, additionalRetryCodes: ['ENOENT'] })).resolves.toBe('created')
+    expect(attempts).toBe(2)
+  })
+
   it('does not hide permanent filesystem errors', async () => {
     let attempts = 0
     await expect(retryFileOperation(async () => {

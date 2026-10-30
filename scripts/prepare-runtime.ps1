@@ -73,6 +73,10 @@ foreach ($package in $packages | Where-Object Name -eq 'php') {
     Get-ChildItem -LiteralPath (Join-Path $destination 'ext') -Filter 'php_*.dll' | Sort-Object Name | ForEach-Object Name | Set-Content -LiteralPath (Join-Path $destination 'available-extensions.txt') -Encoding utf8
 }
 Expand-Package ($packages | Where-Object Name -eq 'apache') (Join-Path $runtime 'apache') 'bin\httpd.exe'
+$apacheLogs = Join-Path $runtime 'apache\logs'
+if (Test-Path -LiteralPath $apacheLogs) {
+    Get-ChildItem -LiteralPath $apacheLogs -File -Force | Remove-Item -Force
+}
 Expand-Package ($packages | Where-Object Name -eq 'mariadb') (Join-Path $runtime 'mariadb') 'bin\mariadbd.exe'
 Expand-Package ($packages | Where-Object Name -eq 'phpmyadmin') (Join-Path $runtime 'htdocs\phpmyadmin') 'index.php'
 
@@ -82,7 +86,7 @@ Copy-Item -Path (Join-Path $siteSource '*') -Destination $htdocs -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repo 'build\assets\weebx-logo.png') -Destination (Join-Path $htdocs 'assets\weebx-logo.png') -Force
 
 $manifest = [ordered]@{
-    version = '2026.10.24.2'
+    version = '2026.10.28.1'
     apache = '2.4.69'
     mariadb = '12.3.3'
     phpMyAdmin = '5.2.3'

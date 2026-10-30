@@ -65,6 +65,8 @@ describe('ConfigManager templates', () => {
     const config = manager.apacheTemplate(settings)
     expect(config).toContain('Options -Indexes +FollowSymLinks')
     expect(config).toContain('ServerTokens Prod')
+    expect(config).toContain('SSLProtocol -all +TLSv1.2 +TLSv1.3')
+    expect(config).toContain('SSLCompression Off')
     expect(config).toContain('Require local')
     expect(config).toContain('<Directory />')
     expect(config).toContain('DocumentRoot "C:/WeebX Runtime/htdocs"')

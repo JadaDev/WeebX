@@ -1,40 +1,16 @@
-# Dependencies and generated application output
 node_modules/
 out/
 dist/
-release/
 coverage/
-.vite/
 *.log
-npm-debug.log*
-
-# Large third-party runtimes and build caches
+.vite/
+runtime/
 resources/runtime/
-build/*
-!build/assets/
-!build/assets/**
-
-# Local website state and downloadable release binaries
-website/WeebX/_data/.download-stats.json
-website/WeebX/Files/*
-!website/WeebX/Files/.gitkeep
-!website/WeebX/Files/README.txt
-
-# Local configuration, credentials and signing material
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.pfx
-*.p12
-*.cer
-*.crt
-
-# Editor and operating-system files
-.idea/
-.vscode/
+release/
+.electron-*.log
 .DS_Store
 Thumbs.db
-Desktop.ini
-.electron-*.log
+website/WeebX/Files/*.msi
+website/WeebX/Files/*.zip
+build/installer/*.bmp
+build/installer/*.rtf

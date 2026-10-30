@@ -10,11 +10,13 @@ import { ProcessManager } from './process-manager'
 import { VhostManager } from './vhost-manager'
 import { Installer } from './installer'
 import { registerIpc } from './ipc'
+import { PreinstalledAppManager } from './preinstalled-apps'
 import { RuntimeSeeder } from './runtime-seeder'
 import { RelocationManager } from './relocation-manager'
 import { pointUninstallToApp } from './stack-shutdown'
 import { applyPermissionPreset } from './permissions'
 import { bundledFile, preloadScript, rendererIndex } from './app-paths'
+import { isElevated, prepareElevatedRelaunch } from './administrator'
 
 // Chromium's crash reporter is not used by WeebX. Avoid launching that extra
 // native helper while antivirus software is still inspecting a fresh install.
@@ -26,6 +28,13 @@ let processes: ProcessManager | null = null
 let installer: Installer | null = null
 let quitting = false
 let uninstallMode = false
+
+async function restartElevated(): Promise<void> {
+  if (await isElevated()) return
+  await prepareElevatedRelaunch(app.isPackaged ? [] : [app.getAppPath()])
+  quitting = true
+  app.quit()
+}
 
 const dataDirectoryArgument = process.argv.find((argument) => argument.startsWith('--weebx-data-dir='))
 if (dataDirectoryArgument) {
@@ -180,6 +189,7 @@ async function createWindow(): Promise<void> {
     processes = new ProcessManager(store, logs, configs)
     const vhosts = new VhostManager(store, configs, logs)
     installer = new Installer(store, configs, logs)
+    const preinstalledApps = new PreinstalledAppManager(store, vhosts, logs)
     const relocation = new RelocationManager(store, configs, vhosts, logs)
     const seeder = new RuntimeSeeder(store, logs)
 
@@ -218,7 +228,7 @@ async function createWindow(): Promise<void> {
 
     sendPreparation({ phase: 'checking', percent: 99, message: 'Checking services and ports', detail: 'Reading Apache and MariaDB status...', etaSeconds: 1 })
     await processes.initialize()
-    registerIpc({ window: mainWindow, store, processes, configs, vhosts, installer, logs, relocation, exitForUninstall })
+    registerIpc({ window: mainWindow, store, processes, configs, vhosts, installer, logs, relocation, preinstalledApps, exitForUninstall, restartElevated })
     sendPreparation({ phase: 'complete', percent: 100, message: 'WeebX is ready', detail: 'Opening the control panel...', etaSeconds: 0 })
     if (preparationController.signal.aborted) throw cancelledError()
 
@@ -400,8 +410,9 @@ async function createUninstallWindow(): Promise<void> {
   processes = new ProcessManager(store, logs, configs)
   const vhosts = new VhostManager(store, configs, logs)
   installer = new Installer(store, configs, logs)
+  const preinstalledApps = new PreinstalledAppManager(store, vhosts, logs)
   const relocation = new RelocationManager(store, configs, vhosts, logs)
-  registerIpc({ window: mainWindow, store, processes, configs, vhosts, installer, logs, relocation, exitForUninstall })
+  registerIpc({ window: mainWindow, store, processes, configs, vhosts, installer, logs, relocation, preinstalledApps, exitForUninstall, restartElevated })
   await loadUninstallPage(mainWindow)
   mainWindow.show()
   void processes.initialize().catch(() => undefined)

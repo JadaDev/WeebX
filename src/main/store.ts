@@ -1,13 +1,16 @@
 import { safeStorage } from 'electron'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { RuntimeSettings, VirtualHost } from '../shared/types'
+import type { PreinstalledAppActivity, PreinstalledAppRecord, RuntimeSettings, VirtualHost } from '../shared/types'
 import { defaultSettings } from './defaults'
 
 interface StoreData {
   settings: RuntimeSettings
   virtualHosts: VirtualHost[]
   siteDatabasePasswords: Record<string, string>
+  appAdminPasswords: Record<string, string>
+  installedApps: PreinstalledAppRecord[]
+  preinstalledAppActivity: PreinstalledAppActivity[]
 }
 
 interface StoredData {
@@ -15,6 +18,9 @@ interface StoredData {
   virtualHosts?: VirtualHost[]
   mariadbPasswordProtected?: string
   siteDatabasePasswordsProtected?: string
+  appAdminPasswordsProtected?: string
+  installedApps?: PreinstalledAppRecord[]
+  preinstalledAppActivity?: PreinstalledAppActivity[]
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -58,22 +64,35 @@ export class JsonStore {
       const siteSecrets = saved.siteDatabasePasswordsProtected
         ? await unprotectPassword(saved.siteDatabasePasswordsProtected)
         : { password: '{}', shouldReEncrypt: false }
+      const adminSecrets = saved.appAdminPasswordsProtected
+        ? await unprotectPassword(saved.appAdminPasswordsProtected)
+        : { password: '{}', shouldReEncrypt: false }
       let siteDatabasePasswords: Record<string, string> = {}
+      let appAdminPasswords: Record<string, string> = {}
       try {
         const parsed = JSON.parse(siteSecrets.password) as unknown
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           siteDatabasePasswords = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
         }
       } catch { throw new Error('The saved isolated-site database credentials are damaged. Reset the affected site credentials.') }
+      try {
+        const parsed = JSON.parse(adminSecrets.password) as unknown
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          appAdminPasswords = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+        }
+      } catch { throw new Error('The saved application administrator credentials are damaged. Reset the affected app from Installed apps.') }
       this.data = {
         settings: { ...defaults, ...saved.settings, mariadbPassword: decrypted.password },
         virtualHosts: Array.isArray(saved.virtualHosts) ? saved.virtualHosts : [],
-        siteDatabasePasswords
+        siteDatabasePasswords,
+        appAdminPasswords,
+        installedApps: Array.isArray(saved.installedApps) ? saved.installedApps : [],
+        preinstalledAppActivity: Array.isArray(saved.preinstalledAppActivity) ? saved.preinstalledAppActivity.slice(-2000) : []
       }
-      if (legacyPassword !== undefined || saved.mariadbPasswordProtected === undefined || decrypted.shouldReEncrypt || siteSecrets.shouldReEncrypt) await this.save()
+      if (legacyPassword !== undefined || saved.mariadbPasswordProtected === undefined || decrypted.shouldReEncrypt || siteSecrets.shouldReEncrypt || adminSecrets.shouldReEncrypt) await this.save()
     } catch (error) {
       if (!isMissingFile(error)) throw error
-      this.data = { settings: defaultSettings(), virtualHosts: [], siteDatabasePasswords: {} }
+      this.data = { settings: defaultSettings(), virtualHosts: [], siteDatabasePasswords: {}, appAdminPasswords: {}, installedApps: [], preinstalledAppActivity: [] }
       await this.save()
     }
     return this.data
@@ -115,6 +134,44 @@ export class JsonStore {
     await this.save()
   }
 
+  async getAppAdminPassword(installId: string): Promise<string> {
+    return (await this.load()).appAdminPasswords[installId] ?? ''
+  }
+
+  async setAppAdminPassword(installId: string, password: string): Promise<void> {
+    const data = await this.load()
+    data.appAdminPasswords[installId] = password
+    await this.save()
+  }
+
+  async deleteAppAdminPassword(installId: string): Promise<void> {
+    const data = await this.load()
+    delete data.appAdminPasswords[installId]
+    await this.save()
+  }
+
+  async getInstalledApps(): Promise<PreinstalledAppRecord[]> {
+    return (await this.load()).installedApps.map((item) => ({
+      ...item,
+      phpExtensions: Array.isArray(item.phpExtensions) ? [...item.phpExtensions] : []
+    }))
+  }
+
+  async setInstalledApps(installedApps: PreinstalledAppRecord[]): Promise<void> {
+    ;(await this.load()).installedApps = installedApps
+    await this.save()
+  }
+
+  async getPreinstalledAppActivity(): Promise<PreinstalledAppActivity[]> {
+    return [...(await this.load()).preinstalledAppActivity]
+  }
+
+  async addPreinstalledAppActivity(entry: PreinstalledAppActivity): Promise<void> {
+    const data = await this.load()
+    data.preinstalledAppActivity = [...data.preinstalledAppActivity.slice(-1999), entry]
+    await this.save()
+  }
+
   private async save(): Promise<void> {
     const pending = this.saveQueue.catch(() => undefined).then(() => this.writeSnapshot())
     this.saveQueue = pending
@@ -129,9 +186,14 @@ export class JsonStore {
     const stored = {
       settings,
       virtualHosts: this.data.virtualHosts,
+      installedApps: this.data.installedApps,
+      preinstalledAppActivity: this.data.preinstalledAppActivity,
       mariadbPasswordProtected: await protectPassword(mariadbPassword),
       siteDatabasePasswordsProtected: Object.keys(this.data.siteDatabasePasswords).length
         ? await protectPassword(JSON.stringify(this.data.siteDatabasePasswords))
+        : '',
+      appAdminPasswordsProtected: Object.keys(this.data.appAdminPasswords).length
+        ? await protectPassword(JSON.stringify(this.data.appAdminPasswords))
         : ''
     }
     try {
