@@ -1,87 +1,61 @@
 # WeebX Version Check
 
-This document tracks whether the Apache, PHP, and MariaDB versions used by WeebX are current compared to their latest upstream stable releases. The goal is to keep the check current without hard-coding a static version list.
+This file is designed to answer one question quickly: is the WeebX server stack still current, or is it behind the latest Apache, PHP, and MariaDB releases?
 
-## Current server versions
+## Quick status summary
 
-Run this on the WeebX host to capture the versions currently installed:
+If the installed version is older than the latest upstream version, the component is marked as `OUTDATED`.
 
-```bash
-apache=$(apache2 -v 2>&1 | awk -F/ '/Server version/ {print $2}' | tr -d ' ' || httpd -v 2>&1 | awk -F/ '/Server version/ {print $2}' | tr -d ' ')
-php=$(php -v 2>/dev/null | head -n 1 | awk '{print $2}')
-mariadb=$(mysql --version 2>/dev/null | awk '{print $5}' | tr -d ',' || mariadb --version 2>/dev/null | awk '{print $5}' | tr -d ',')
+Example result:
 
-echo "Apache: ${apache:-Not installed}"
-echo "PHP: ${php:-Not installed}"
-echo "MariaDB: ${mariadb:-Not installed}"
+```text
+Apache: INSTALLED=2.4.58, LATEST=2.4.62, STATUS OUTDATED
+PHP: INSTALLED=8.2.13, LATEST=8.3.12, STATUS OUTDATED
+MariaDB: INSTALLED=10.11.8, LATEST=10.11.14, STATUS OUTDATED
+WeebX dependency stack is OUTDATED or needs review.
 ```
 
-## Latest upstream versions
+If all versions match or are newer than the upstream release, the result will say:
 
-The commands below fetch the latest stable builds directly from the official project release pages so the comparison stays current.
-
-```bash
-# Apache HTTP Server latest stable
-apache_latest=$(curl -fsSL https://downloads.apache.org/httpd/ \
-  | grep -Eo 'httpd-[0-9]+\.[0-9]+\.[0-9]+\.tar\.bz2' \
-  | sort -V \
-  | tail -n 1 \
-  | sed 's/httpd-//; s/\.tar\.bz2$//')
-
-# PHP latest stable
-php_latest=$(curl -fsSL https://www.php.net/releases/ \
-  | grep -Eo 'php-[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.tar\.gz' \
-  | sort -V \
-  | tail -n 1 \
-  | sed 's/php-//; s/\.tar\.gz$//')
-
-# MariaDB latest stable
-mariadb_latest=$(curl -fsSL https://mariadb.org/download/ \
-  | grep -Eo 'MariaDB Server [0-9]+\.[0-9]+\.[0-9]+' \
-  | head -n 1 \
-  | awk '{print $3}')
-
-echo "Apache latest: ${apache_latest:-Unknown}"
-echo "PHP latest: ${php_latest:-Unknown}"
-echo "MariaDB latest: ${mariadb_latest:-Unknown}"
+```text
+Apache: INSTALLED=2.4.62, LATEST=2.4.62, STATUS CURRENT
+PHP: INSTALLED=8.3.12, LATEST=8.3.12, STATUS CURRENT
+MariaDB: INSTALLED=10.11.14, LATEST=10.11.14, STATUS CURRENT
+All checked dependencies are current.
 ```
 
-## Version comparison
+## Run the check
+
+On the WeebX server, run:
 
 ```bash
-apache_installed="$(apache2 -v 2>&1 | awk -F/ '/Server version/ {print $2}' | tr -d ' ' || httpd -v 2>&1 | awk -F/ '/Server version/ {print $2}' | tr -d ' ')"
-php_installed="$(php -v 2>/dev/null | head -n 1 | awk '{print $2}')"
-mariadb_installed="$(mysql --version 2>/dev/null | awk '{print $5}' | tr -d ',' || mariadb --version 2>/dev/null | awk '{print $5}' | tr -d ',')"
-
-apache_latest="$(curl -fsSL https://downloads.apache.org/httpd/ | grep -Eo 'httpd-[0-9]+\.[0-9]+\.[0-9]+\.tar\.bz2' | sort -V | tail -n 1 | sed 's/httpd-//; s/\.tar\.bz2$//')"
-php_latest="$(curl -fsSL https://www.php.net/releases/ | grep -Eo 'php-[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\.tar\.gz' | sort -V | tail -n 1 | sed 's/php-//; s/\.tar\.gz$//')"
-mariadb_latest="$(curl -fsSL https://mariadb.org/download/ | grep -Eo 'MariaDB Server [0-9]+\.[0-9]+\.[0-9]+' | head -n 1 | awk '{print $3}')"
-
-printf '%-12s %-20s %-20s\n' "Component" "Installed" "Latest" 
-printf '%-12s %-20s %-20s\n' "Apache" "${apache_installed:-Unknown}" "${apache_latest:-Unknown}"
-printf '%-12s %-20s %-20s\n' "PHP" "${php_installed:-Unknown}" "${php_latest:-Unknown}"
-printf '%-12s %-20s %-20s\n' "MariaDB" "${mariadb_installed:-Unknown}" "${mariadb_latest:-Unknown}"
+bash /path/to/scripts/version-check.sh
 ```
 
-## Suggested status matrix
+Example:
 
-| Component | Installed version | Latest stable | Status |
-| --- | --- | --- | --- |
-| Apache | `example: 2.4.58` | `auto-fetched from upstream` | `Needs review` |
-| PHP | `example: 8.2.13` | `auto-fetched from upstream` | `Needs review` |
-| MariaDB | `example: 10.11.8` | `auto-fetched from upstream` | `Needs review` |
+```bash
+bash scripts/version-check.sh
+```
 
-## Notes
+## What it checks
 
-- The version checks use the official upstream release pages, so the latest values are refreshed each time the commands are run.
-- For WeebX deployments, update Apache, PHP, and MariaDB together when a security or compatibility issue is detected.
-- If a WeebX package or installer pins an older version intentionally for compatibility, record the reason in the deployment notes and re-check when the dependency stack changes.
+The script compares:
 
-## Recommended maintenance workflow
+- Apache installed version vs latest Apache HTTP Server release
+- PHP installed version vs latest PHP release
+- MariaDB installed version vs latest MariaDB release
 
-1. Run the version check on the production or staging server.
-2. Compare installed versions with the latest stable upstream versions.
-3. Review compatibility notes from Apache, PHP, and MariaDB before upgrading.
-4. Update the deployment checklist and confirm that the WeebX stack still functions correctly after the upgrade.
+## Version comparison logic
 
-This file is designed to stay current by relying on live upstream release endpoints rather than fixed values.
+A component is considered `OUTDATED` if the installed version is lower than the latest upstream stable version.
+
+- `CURRENT`: installed version matches or is newer than the latest known release
+- `OUTDATED`: installed version is older than the latest known release
+- `UNKNOWN`: the version could not be determined or the upstream page could not be checked
+
+## Recommended action
+
+If any component reports `OUTDATED`, review compatibility notes before upgrading, then move the WeebX server to a compatible updated stack.
+
+This gives a clear yes/no answer on GitHub when someone checks the repository documentation and then runs the script on the server.
