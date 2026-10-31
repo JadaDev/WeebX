@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
+set -uo pipefail
 
-# WeebX dependency version checker
-# Reads the installed Apache / PHP / MariaDB versions from the current host,
-# checks the latest upstream stable versions, and reports CURRENT / OUTDATED / UNKNOWN.
+# WeebX bundled version checker
+# Compares the versions shipped in the project source to the latest upstream releases.
+# It is intentionally limited to the versions listed in README.md.
 
-trim_version() {
-  printf '%s' "$1" | grep -Eo '[0-9]+(\.[0-9]+)+' | head -n 1 || true
-}
+WEEBX_APACHE="2.4.69"
+WEEBX_PHP="8.5.12"
+WEEBX_MARIADB="12.3.3"
 
 fetch_latest_apache() {
   curl -fsSL https://downloads.apache.org/httpd/ 2>/dev/null \
     | grep -Eo 'httpd-[0-9]+\.[0-9]+\.[0-9]+' \
     | sed 's/^httpd-//' \
     | sort -V \
-    | tail -n 1
+    | tail -n 1 || echo 'unknown'
 }
 
 fetch_latest_php() {
@@ -24,7 +23,7 @@ fetch_latest_php() {
     | sed 's/^php-//' \
     | sed 's/\.tar\.(gz|bz2)$//' \
     | sort -V \
-    | tail -n 1
+    | tail -n 1 || echo 'unknown'
 }
 
 fetch_latest_mariadb() {
@@ -32,7 +31,7 @@ fetch_latest_mariadb() {
     | grep -Eo 'MariaDB Server [0-9]+\.[0-9]+\.[0-9]+' \
     | awk '{print $3}' \
     | sort -V \
-    | tail -n 1
+    | tail -n 1 || echo 'unknown'
 }
 
 version_is_lower() {
@@ -41,61 +40,40 @@ version_is_lower() {
   [ -n "$left" ] && [ -n "$right" ] && [ "$left" != "$right" ] && [ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | head -n 1)" = "$left" ]
 }
 
-apache_installed="$( (apache2 -v 2>&1 || httpd -v 2>&1 || true) | awk -F/ '/Server version/ {print $2}' | tr -d ' ' | head -n 1 )"
-[ -z "$apache_installed" ] && apache_installed="not-installed"
-apache_installed="$(trim_version "$apache_installed")"
-[ -z "$apache_installed" ] && apache_installed="not-installed"
-
-php_installed="$(php -v 2>/dev/null | head -n 1 | awk '{print $2}' || echo 'not-installed')"
-php_installed="$(trim_version "$php_installed")"
-[ -z "$php_installed" ] && php_installed="not-installed"
-
-mariadb_installed="$( (mysql --version 2>/dev/null || mariadb --version 2>/dev/null || true) | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 )"
-[ -z "$mariadb_installed" ] && mariadb_installed="not-installed"
-
-apache_latest="$(fetch_latest_apache || echo 'unknown')"
-php_latest="$(fetch_latest_php || echo 'unknown')"
-mariadb_latest="$(fetch_latest_mariadb || echo 'unknown')"
-
-status_component() {
-  local component="$1"
-  local installed="$2"
+check_component() {
+  local name="$1"
+  local bundled="$2"
   local latest="$3"
 
-  if [ "$installed" = "not-installed" ]; then
-    echo "$component: INSTALLED=not-installed, LATEST=${latest:-unknown}, STATUS UNKNOWN"
-    return 1
-  fi
-
   if [ "$latest" = "unknown" ]; then
-    echo "$component: INSTALLED=$installed, LATEST=unknown, STATUS UNKNOWN"
+    echo "$name: BUNDLED=$bundled, LATEST=unknown, STATUS UNKNOWN"
     return 1
   fi
 
-  if [ "$installed" = "$latest" ]; then
-    echo "$component: INSTALLED=$installed, LATEST=$latest, STATUS CURRENT"
+  if [ "$bundled" = "$latest" ]; then
+    echo "$name: BUNDLED=$bundled, LATEST=$latest, STATUS CURRENT"
     return 0
   fi
 
-  if version_is_lower "$installed" "$latest"; then
-    echo "$component: INSTALLED=$installed, LATEST=$latest, STATUS OUTDATED"
+  if version_is_lower "$bundled" "$latest"; then
+    echo "$name: BUNDLED=$bundled, LATEST=$latest, STATUS OUTDATED"
     return 2
   fi
 
-  echo "$component: INSTALLED=$installed, LATEST=$latest, STATUS CURRENT"
+  echo "$name: BUNDLED=$bundled, LATEST=$latest, STATUS CURRENT"
   return 0
 }
 
 status=0
-status_component "Apache" "$apache_installed" "$apache_latest" || status=$?
-status_component "PHP" "$php_installed" "$php_latest" || status=$?
-status_component "MariaDB" "$mariadb_installed" "$mariadb_latest" || status=$?
+check_component "Apache HTTP Server" "$WEEBX_APACHE" "$(fetch_latest_apache)" || status=$?
+check_component "PHP x64 NTS" "$WEEBX_PHP" "$(fetch_latest_php)" || status=$?
+check_component "MariaDB Server" "$WEEBX_MARIADB" "$(fetch_latest_mariadb)" || status=$?
 
 printf '\n'
 if [ "$status" -ne 0 ]; then
-  echo "WeebX dependency stack is OUTDATED or needs review."
+  echo "WeebX bundled stack is OUTDATED or needs review."
 else
-  echo "WeebX dependency stack is CURRENT."
+  echo "WeebX bundled stack is CURRENT."
 fi
 
 exit 0
