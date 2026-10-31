@@ -1,61 +1,43 @@
-# WeebX Version Check
+# WeebX version check
 
-This file is designed to answer one question quickly: is the WeebX server stack still current, or is it behind the latest Apache, PHP, and MariaDB releases?
+This page checks the versions currently bundled with WeebX against the latest upstream stable releases.
 
-## Quick status summary
+The current WeebX bundle in the project source is:
 
-If the installed version is older than the latest upstream version, the component is marked as `OUTDATED`.
+- Apache HTTP Server: 2.4.69
+- PHP x64 NTS: 8.2.35, 8.3.36, 8.4.27, 8.5.12
+- MariaDB Server: 12.3.3
 
-Example result:
+For the automated comparison, the newest bundled PHP runtime is used as the PHP baseline: 8.5.12.
 
-```text
-Apache: INSTALLED=2.4.58, LATEST=2.4.62, STATUS OUTDATED
-PHP: INSTALLED=8.2.13, LATEST=8.3.12, STATUS OUTDATED
-MariaDB: INSTALLED=10.11.8, LATEST=10.11.14, STATUS OUTDATED
-WeebX dependency stack is OUTDATED or needs review.
-```
+## Status logic
 
-If all versions match or are newer than the upstream release, the result will say:
-
-```text
-Apache: INSTALLED=2.4.62, LATEST=2.4.62, STATUS CURRENT
-PHP: INSTALLED=8.3.12, LATEST=8.3.12, STATUS CURRENT
-MariaDB: INSTALLED=10.11.14, LATEST=10.11.14, STATUS CURRENT
-All checked dependencies are current.
-```
+- CURRENT: the bundled WeebX version matches the latest upstream release
+- OUTDATED: the bundled WeebX version is behind the latest upstream release
+- UNKNOWN: the upstream version could not be checked
 
 ## Run the check
-
-On the WeebX server, run:
-
-```bash
-bash /path/to/scripts/version-check.sh
-```
-
-Example:
 
 ```bash
 bash scripts/version-check.sh
 ```
 
-## What it checks
+## Example output
 
-The script compares:
+```text
+Apache HTTP Server: BUNDLED=2.4.69, LATEST=2.4.72, STATUS OUTDATED
+PHP x64 NTS: BUNDLED=8.5.12, LATEST=8.5.13, STATUS OUTDATED
+MariaDB Server: BUNDLED=12.3.3, LATEST=12.3.4, STATUS OUTDATED
+WeebX bundled stack is OUTDATED.
+```
 
-- Apache installed version vs latest Apache HTTP Server release
-- PHP installed version vs latest PHP release
-- MariaDB installed version vs latest MariaDB release
+If everything is current, the script prints:
 
-## Version comparison logic
+```text
+Apache HTTP Server: BUNDLED=2.4.69, LATEST=2.4.69, STATUS CURRENT
+PHP x64 NTS: BUNDLED=8.5.12, LATEST=8.5.12, STATUS CURRENT
+MariaDB Server: BUNDLED=12.3.3, LATEST=12.3.3, STATUS CURRENT
+WeebX bundled stack is CURRENT.
+```
 
-A component is considered `OUTDATED` if the installed version is lower than the latest upstream stable version.
-
-- `CURRENT`: installed version matches or is newer than the latest known release
-- `OUTDATED`: installed version is older than the latest known release
-- `UNKNOWN`: the version could not be determined or the upstream page could not be checked
-
-## Recommended action
-
-If any component reports `OUTDATED`, review compatibility notes before upgrading, then move the WeebX server to a compatible updated stack.
-
-This gives a clear yes/no answer on GitHub when someone checks the repository documentation and then runs the script on the server.
+This check is intentionally limited to the versions WeebX actually ships in the repository, so the result is a clear yes/no answer for whether the bundle is behind upstream.
