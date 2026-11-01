@@ -46,11 +46,11 @@ export function UninstallApp() {
       setMariaDb(stopped.mariadb)
       setOtherWeebx(stopped.weebx)
       if (stopped.apache || stopped.mariadb || stopped.weebx) throw new Error('A WeebX service or another WeebX window is still running. Close it and try again.')
-      setMessage('Services stopped. Starting Windows Installer; this window will close last...')
+      setMessage('Services stopped. Starting Windows Installer; this window will close, then the MSI uninstaller will remove WeebX...')
       const result = await window.weebx.uninstall({ keepHtdocs })
       setMessage(result.savedTo
-        ? `Websites copied to ${result.savedTo}. Windows is now removing WeebX.`
-        : 'Windows is now removing WeebX. This window will close.')
+        ? `Websites copied to ${result.savedTo}. Windows Installer will now remove WeebX.`
+        : 'Windows Installer will now remove WeebX. This window will close.')
     } catch (cause) {
       const text = cause instanceof Error ? cause.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(cause)
       if (isClosedDuringUninstall(text)) return true
@@ -86,7 +86,7 @@ export function UninstallApp() {
     </>}
     {error && <div className="alert"><CircleAlert size={18} /><span>{error}</span></div>}
     {!busy && <ActionButton className="primary" disabled={!confirmed} working={busy} icon={<Power size={16} />} label="Confirm uninstall" onClick={uninstall} />}
-    <p className="note">{keepHtdocs ? 'Sites are copied to Documents\\WeebX Sites, then Windows removes WeebX and its default C:\\WeebX runtime.' : 'Windows removes WeebX and its default C:\\WeebX runtime, including websites in htdocs.'}</p>
+    <p className="note">{keepHtdocs ? 'Sites are copied to Documents\\WeebX Sites, then Windows Installer removes WeebX and its default C:\\WeebX runtime.' : 'Windows Installer removes WeebX and its default C:\\WeebX runtime, including websites in htdocs.'}</p>
     <span className="version">Made by JadaDev - WeebX {WEEBX_VERSION}</span>
     <div className="uninstall-safe"><ShieldCheck size={14} /> Services and other WeebX windows close first; uninstaller closes last{keepHtdocs ? <><FolderOpen size={14} /> Sites kept</> : null}</div>
   </div>

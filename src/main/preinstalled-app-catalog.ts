@@ -199,3 +199,15 @@ export function publicPreinstalledAppCatalog(): PreinstalledAppCatalogItem[] {
 export function findPreinstalledApp(id: string): InternalPreinstalledApp | undefined {
   return PREINSTALLED_APP_CATALOG.find((item) => item.id === id)
 }
+
+/** GitList shells out to git.exe and the official zip ships an incomplete Symfony vendor tree. */
+export function catalogRuntimePolicy(id: string): { openBasedir: boolean; disableDangerousFunctions: boolean; customIni: string } {
+  if (id === 'gitlist') {
+    return {
+      openBasedir: false,
+      disableDangerousFunctions: false,
+      customIni: 'error_reporting=E_ALL & ~E_DEPRECATED'
+    }
+  }
+  return { openBasedir: true, disableDangerousFunctions: true, customIni: '' }
+}

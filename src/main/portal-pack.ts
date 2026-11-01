@@ -58,7 +58,9 @@ export function shouldPackRuntimeFile(relativePath: string, options: PortalOptio
   if (path.startsWith('mariadb/data/') || path === 'mariadb/data' || path.startsWith('mariadb/data')) return options.includeDb
   if (path.startsWith('htdocs/') || path === 'htdocs') {
     if (options.includeHtdocs) return true
-    return path === 'htdocs' || path.startsWith('htdocs/phpmyadmin/') || path === 'htdocs/phpmyadmin'
+    return path === 'htdocs'
+      || path.startsWith('htdocs/phpmyadmin/') || path === 'htdocs/phpmyadmin'
+      || path.startsWith('htdocs/main-site/') || path === 'htdocs/main-site'
   }
   return true
 }

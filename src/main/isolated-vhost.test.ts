@@ -56,11 +56,17 @@ describe('isolated virtual-host Apache configuration', () => {
     const profileRoot = siteProfilePaths(settings, site).root
     try {
       await manager.render()
+      expect(vhostConfig).toContain('ServerName localhost')
+      expect(vhostConfig.indexOf('ServerName localhost')).toBeLessThan(vhostConfig.indexOf('ServerName isolated.test'))
+      expect(vhostConfig).toContain('main-site')
       expect(vhostConfig).toContain('AddHandler application/x-httpd-php .php')
       expect(vhostConfig).toContain('SetEnv PHPRC')
       expect(vhostConfig).toContain('apache-access.log')
       expect(vhostConfig).toContain('Header always set X-Content-Type-Options "nosniff"')
       expect(vhostConfig).toContain('Header always set Referrer-Policy "strict-origin-when-cross-origin"')
+      expect(vhostConfig).toContain('Header always set Cache-Control "private, no-store"')
+      expect(vhostConfig).toContain('Header always set Strict-Transport-Security "max-age=0"')
+      expect(vhostConfig).not.toContain('Redirect permanent')
       const vhostFile = join(folder, 'httpd-vhosts.conf')
       await writeFile(vhostFile, vhostConfig, 'utf8')
       const mainFile = join(folder, 'httpd.conf')

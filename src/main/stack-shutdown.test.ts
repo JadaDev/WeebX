@@ -3,7 +3,13 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildMsiUninstallScript, clearResetStateBeforeUninstall, isDefaultUserDataForRemoval, isInsideDirectory, isManagedRuntimeForRemoval, shouldStopProcess, uninstallHelperArgs } from './stack-shutdown'
+import {
+  buildMsiUninstallScript, clearResetStateBeforeUninstall, isDefaultUserDataForRemoval, isInsideDirectory,
+  isManagedRuntimeForRemoval, isUsableProductGuid, isWeebXManagedUninstallCommand, isWeebXUninstallDisplayName,
+  leftoverWeebXUninstallKeys, NIL_PRODUCT_GUID, packagedInstallFolder, parseInstalledProductLines,
+  preferWeebXUninstallEntry, productGuidFrom, shouldStopProcess, uninstallHelperArgs, uninstallHelperLaunch,
+  WEEBX_MSI_UPGRADE_CODE
+} from './stack-shutdown'
 
 describe('stack shutdown matching', () => {
   it('stops WeebX Apache and MariaDB processes but not the current app', () => {
@@ -60,25 +66,86 @@ describe('uninstall reset cleanup', () => {
 })
 
 describe('uninstall helper launch', () => {
-  it('uses Windows Script Host without a console window', () => {
-    expect(uninstallHelperArgs('C:\\Users\\Test User\\AppData\\Local\\Temp\\weebx-uninstall.vbs')).toEqual([
-      '//NoLogo', 'C:\\Users\\Test User\\AppData\\Local\\Temp\\weebx-uninstall.vbs'
-    ])
+  it('breaks the helper out of Electron with cmd start so msiexec can keep running', () => {
+    const scriptPath = 'C:\\Users\\Test User\\AppData\\Local\\Temp\\weebx-uninstall.vbs'
+    const launch = uninstallHelperLaunch(scriptPath)
+    expect(launch.file.toLowerCase()).toContain('cmd')
+    expect(launch.args).toEqual(uninstallHelperArgs(scriptPath))
+    expect(launch.args.join(' ')).toContain('start "WeebX Uninstall Helper" /min wscript.exe //NoLogo')
+    expect(launch.args.join(' ')).toContain(scriptPath)
+    expect(launch.options.detached).toBe(true)
+    expect(launch.options.windowsVerbatimArguments).toBe(true)
   })
 
   it('writes a startup handshake and an MSI log', () => {
     const script = buildMsiUninstallScript({
-      guid: '{00000000-0000-0000-0000-000000000000}',
+      guid: '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}',
       startedMarker: 'C:\\Temp\\weebx-uninstall.started'
     })
     expect(script).toContain('Set markerFile = fso.CreateTextFile("C:\\Temp\\weebx-uninstall.started", True)')
-    expect(script).toContain('msiexec.exe /x {00000000-0000-0000-0000-000000000000} /passive /norestart /L*v')
+    expect(script).toContain('/x " & guid & " /qb /norestart /L*v')
+    expect(script).toContain('{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}')
+    expect(script).toContain('%SystemRoot%\\System32\\msiexec.exe')
     expect(script).toContain('shell.ExpandEnvironmentStrings("%TEMP%\\weebx-uninstall-msi.log")')
+    expect(script).not.toContain('exitCode <> 1605')
+  })
+
+  it('never asks Windows Installer to remove a nil or missing product code', () => {
+    const script = buildMsiUninstallScript({
+      guid: NIL_PRODUCT_GUID,
+      leftoverKeys: ['HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{07046A8A-635B-47F4-926C-BB375A981113}']
+    })
+    expect(script).not.toMatch(/\/x \{00000000-0000-0000-0000-000000000000\}/)
+    expect(script).toContain('Removing leftover uninstall key')
+    expect(script).toContain('{07046A8A-635B-47F4-926C-BB375A981113}')
+    expect(script).toContain('ShellExecute "wscript.exe"')
+    expect(script).toContain('"runas"')
+    expect(isUsableProductGuid(NIL_PRODUCT_GUID)).toBe(false)
+    expect(productGuidFrom(NIL_PRODUCT_GUID)).toBeUndefined()
+    expect(isWeebXUninstallDisplayName('')).toBe(false)
+    expect(isWeebXUninstallDisplayName(null)).toBe(false)
+    expect(isWeebXUninstallDisplayName('WeebX')).toBe(true)
+    expect(isWeebXManagedUninstallCommand('"C:\\Program Files\\WeebX\\WeebX.exe" --uninstall')).toBe(true)
+  })
+
+  it('treats empty leftover ARP keys as removable and ignores them when the MSI is still installed', () => {
+    const leftover = leftoverWeebXUninstallKeys([
+      {
+        guid: '{07046A8A-635B-47F4-926C-BB375A981113}',
+        key: 'HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{07046A8A-635B-47F4-926C-BB375A981113}',
+        displayName: '',
+        quietUninstallString: '"C:\\Program Files\\WeebX\\WeebX.exe" --uninstall',
+        storedProduct: '{07046A8A-635B-47F4-926C-BB375A981113}'
+      }
+    ], new Set())
+    expect(leftover).toHaveLength(1)
+    expect(leftoverWeebXUninstallKeys([
+      {
+        guid: '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}',
+        key: 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}',
+        displayName: 'WeebX',
+        windowsInstaller: true,
+        storedProduct: '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}'
+      }
+    ], new Set(['{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}']))).toEqual([])
+    expect(parseInstalledProductLines('{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}\r\n{00000000-0000-0000-0000-000000000000}\n')).toEqual(['{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}'])
+    expect(packagedInstallFolder('C:\\Program Files\\WeebX\\WeebX.exe')).toBe('C:\\Program Files\\WeebX')
+    expect(packagedInstallFolder('G:\\WeebX\\node_modules\\electron\\dist\\electron.exe', false)).toBeUndefined()
+    expect(WEEBX_MSI_UPGRADE_CODE).toMatch(/^\{[0-9A-F-]{36}\}$/)
+  })
+
+  it('prefers the machine-wide MSI product code over leftover user uninstall keys', () => {
+    expect(productGuidFrom('MsiExec.exe /X{AaBbCcDd-0000-4000-8000-000000000001}')).toBe('{AABBCCDD-0000-4000-8000-000000000001}')
+    const chosen = preferWeebXUninstallEntry([
+      { guid: '{11111111-1111-1111-1111-111111111111}', key: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\WeebX' },
+      { guid: '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}', key: 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}' }
+    ])
+    expect(chosen?.guid).toBe('{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}')
   })
 
   it('waits for the active uninstaller and removes it last', () => {
     const script = buildMsiUninstallScript({
-      guid: '{00000000-0000-0000-0000-000000000000}',
+      guid: '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}',
       uninstallerPid: 4242
     })
     expect(script).toContain('If Not ProcessExists(4242) Then Exit For')

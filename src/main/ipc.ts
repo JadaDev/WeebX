@@ -12,10 +12,11 @@ import type { Installer } from './installer'
 import type { LogBuffer } from './logs'
 import type { RelocationManager } from './relocation-manager'
 import { findInstalledApp, type PreinstalledAppManager } from './preinstalled-apps'
+import { MAIN_SITE_VHOST_ID } from '../shared/site-layout'
 import { inspectPorts } from './ports'
 import { runtimePaths } from './paths'
 import { recoverMariaDbPassword, syncStoredMariaDbPassword, mariaDbPasswordError, waitUntilPasswordWorks } from './mariadb-password'
-import { buildMsiUninstallScript, clearResetStateBeforeUninstall, findWeebXUninstallEntry, inspectStack, isDefaultUserDataForRemoval, stopStackProcesses, uninstallHelperArgs } from './stack-shutdown'
+import { buildMsiUninstallScript, clearResetStateBeforeUninstall, findWeebXUninstallPlan, inspectStack, isDefaultUserDataForRemoval, packagedInstallFolder, removeOrphanWeebXUninstallKeys, stopStackProcesses, uninstallHelperLaunch } from './stack-shutdown'
 import { preserveHtdocs } from './htdocs-preserve'
 import { packPortal, unpackPortal } from './portal-pack'
 import { applyApacheModules, applyPhpExtensions, applyPhpLimits, assertRuntimeTuneSave, loadRuntimeTune } from './runtime-tune'
@@ -224,12 +225,14 @@ export function registerIpc(deps: Dependencies): () => void {
     return record
   })
   handle('weebx:vhost-delete', async (_event, id: string) => {
+    if (id === MAIN_SITE_VHOST_ID) throw new Error('The main website cannot be deleted from Sites. Uninstall the catalog app instead.')
     const site = (await vhosts.list()).find((item) => item.id === id)
     if (site?.isolation?.database && !['running', 'starting'].includes(processes.status('mariadb').state)) throw new Error('Start MariaDB so WeebX can safely remove the managed database user. The database itself will be preserved.')
     await vhosts.remove(id)
     if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
   })
   handle('weebx:vhost-enable', async (_event, id: string, enabled: boolean) => {
+    if (id === MAIN_SITE_VHOST_ID) throw new Error('The main website stays enabled.')
     const site = await vhosts.setEnabled(id, enabled)
     if (['running', 'starting'].includes(processes.status('apache').state)) await processes.restart('apache')
     return site
@@ -480,8 +483,9 @@ export function registerIpc(deps: Dependencies): () => void {
       savedTo = await preserveHtdocs(settings.htdocsRoot)
       try { await shell.openPath(savedTo) } catch { /* folder still exists */ }
     }
-    const entry = await findWeebXUninstallEntry()
-    if (!entry || !/^\{[0-9A-F-]+\}$/i.test(entry.guid)) throw new Error('Could not find the WeebX MSI. Use Windows Settings > Apps to remove it after stopping Apache and MariaDB here.')
+    const plan = await findWeebXUninstallPlan({ exePath: process.execPath, packaged: app.isPackaged })
+    const installFolder = plan.installFolder ?? packagedInstallFolder(process.execPath, app.isPackaged)
+    await removeOrphanWeebXUninstallKeys().catch(() => [])
     const userData = app.getPath('userData')
     await clearResetStateBeforeUninstall(userData, settings.runtimeRoot)
     try { await removeAllWeebxHostBlocks() }
@@ -490,7 +494,9 @@ export function registerIpc(deps: Dependencies): () => void {
     const startedMarker = join(tmpdir(), 'weebx-uninstall.started')
     await rm(startedMarker, { force: true })
     await writeFile(scriptPath, buildMsiUninstallScript({
-      guid: entry.guid,
+      productCodes: plan.productCodes,
+      leftoverKeys: plan.leftoverKeys,
+      ...(installFolder ? { installFolder } : {}),
       // Portable Portal data can live beside its EXE. Never recursively remove
       // that custom folder while uninstalling the normal MSI application.
       removeAppData: isDefaultUserDataForRemoval(app.getPath('appData'), userData),
@@ -498,18 +504,18 @@ export function registerIpc(deps: Dependencies): () => void {
       startedMarker,
       uninstallerPid: process.pid
     }), 'utf8')
-    const helper = spawn('wscript.exe', uninstallHelperArgs(scriptPath), { detached: true, stdio: 'ignore', windowsHide: true })
+    const launch = uninstallHelperLaunch(scriptPath)
+    const helper = spawn(launch.file, launch.args, launch.options)
     await new Promise<void>((resolve, reject) => {
       helper.once('spawn', resolve)
       helper.once('error', reject)
     })
-    const started = await Promise.race([
-      waitForFile(startedMarker, 50),
-      new Promise<boolean>((resolve) => helper.once('exit', () => resolve(false)))
-    ])
-    if (!started) throw new Error('Windows could not start the WeebX uninstall helper. Please try again.')
     helper.unref()
-    setTimeout(() => exitForUninstall(), 400)
+    // `cmd /c start` exits immediately on purpose so the helper is outside
+    // Electron's Windows job. Only the marker proves wscript actually started.
+    const started = await waitForFile(startedMarker, 80)
+    if (!started) throw new Error('Windows could not start the WeebX uninstall helper. Please try again.')
+    setTimeout(() => exitForUninstall(), 800)
     return { savedTo: savedTo ?? null }
   })
   handle('weebx:portal-pack', async (_event, options: unknown) => {

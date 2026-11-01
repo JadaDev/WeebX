@@ -263,6 +263,8 @@ export interface PreinstalledAppConnection {
 export interface PreinstalledAppInstallRequest {
   catalogId: string
   location: PreinstalledAppLocation
+  /** When location is default, empty htdocs\\main-site first. Off = replace matching files and keep extras. */
+  clearMainSite?: boolean
   projectName: string
   domain: string
   http: boolean
@@ -293,6 +295,8 @@ export interface PreinstalledAppPreflight {
   ready: boolean
   requiresElevation: boolean
   suggestedProjectName?: string
+  suggestedDomain?: string
+  suggestedFolder?: string
   checks: PreinstalledAppPreflightCheck[]
 }
 
@@ -397,6 +401,7 @@ export interface VhostAccessDraft {
   https: boolean
   forceHttps?: boolean
   updateHosts?: boolean
+  serverName?: string
 }
 
 export interface VhostDraft {

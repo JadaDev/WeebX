@@ -3,8 +3,9 @@ import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { PhpProfile, RuntimeSettings } from '../shared/types'
 import { runtimePaths } from './paths'
+import { MAIN_SITE_FOLDER } from '../shared/site-layout'
 import { backupAndWrite, ensureDirectory, ensureWritableFile } from './safe-file'
-import { ensureWelcomeSite } from './welcome-site'
+import { ensureWelcomeSite, migrateWelcomeFromHtdocsRoot } from './welcome-site'
 
 export function upsertIni(content: string, key: string, value: string): string {
   const line = `${key}=${value}`
@@ -13,8 +14,18 @@ export function upsertIni(content: string, key: string, value: string): string {
   return next === content ? `${content.trimEnd()}\r\n${line}\r\n` : next
 }
 
-export function apacheSecurityBlock(documentRoot: string): string {
+export function apacheSecurityBlock(documentRoot: string, phpMyAdmin?: string): string {
   const root = documentRoot.replace(/\\/g, '/')
+  const phpMyAdminRoot = phpMyAdmin?.replace(/\\/g, '/')
+  const phpMyAdminAlias = phpMyAdminRoot
+    ? `Alias /phpmyadmin "${phpMyAdminRoot}"
+<Directory "${phpMyAdminRoot}">
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require local
+</Directory>
+`
+    : ''
   return `# BEGIN WEEBX SECURITY DEFAULTS
 ServerTokens Prod
 ServerSignature Off
@@ -33,7 +44,7 @@ DocumentRoot "${root}"
     AllowOverride All
     Require all granted
 </Directory>
-<FilesMatch "^\\.(?!well-known)">
+${phpMyAdminAlias}<FilesMatch "^\\.(?!well-known)">
     Require all denied
 </FilesMatch>
 <FilesMatch "(?i)(?:^|\\.)(?:env|ini|log|sql|bak|dist|config|secret|key)$|^(?:composer\\.(?:json|lock)|package-lock\\.json|web\\.config)$">
@@ -66,6 +77,7 @@ export class ConfigManager {
     const paths = runtimePaths(settings)
     await Promise.all([
       ensureDirectory(paths.htdocs),
+      ensureDirectory(paths.mainSite),
       ensureDirectory(paths.certificates),
       ensureDirectory(paths.temp),
       ensureDirectory(paths.mariadbData),
@@ -81,7 +93,8 @@ export class ConfigManager {
     await writeIfMissing(paths.vhostsConf, this.vhostExample(settings))
     await writeIfMissing(paths.mariadbConf, this.mariaDbTemplate(settings))
     await this.ensureApacheSecurity()
-    await ensureWelcomeSite(paths.htdocs, settings)
+    await ensureWelcomeSite(paths.mainSite, settings)
+    await migrateWelcomeFromHtdocsRoot(paths.htdocs)
     await this.ensurePhpRuntime()
     await this.writePhpMyAdminConfig()
   }
@@ -277,7 +290,7 @@ LoadModule reqtimeout_module modules/mod_reqtimeout.so
 LoadModule ssl_module modules/mod_ssl.so
 LoadModule socache_shmcb_module modules/mod_socache_shmcb.so
 ServerName localhost:${settings.apachePort}
-${apacheSecurityBlock(p.htdocs).trimEnd()}
+${apacheSecurityBlock(p.mainSite, p.phpMyAdmin).trimEnd()}
 DirectoryIndex index.php index.html
 ErrorLog "logs/error.log"
 LogLevel warn
@@ -329,14 +342,16 @@ bind-address=127.0.0.1
   vhostExample(settings: RuntimeSettings): string {
     const root = settings.htdocsRoot.replace(/\\/g, '/')
     return `# WeebX virtual hosts
-# Create sites with one click in WeebX, or copy this complete example.
-# For custom domains, also map each name to 127.0.0.1 in the Windows hosts file.
+# localhost always serves ${root}/${MAIN_SITE_FOLDER}.
+# Catalog apps live in dated folders such as ${root}/wordpress10312026 and answer on a clean subdomain.
+# Point public DNS A records at this host; Apache matches ServerName exactly.
+# For custom domains, also map each name to 127.0.0.1 in the Windows hosts file when testing locally.
 #
 # <VirtualHost *:${settings.apachePort}>
-#     ServerName test.jadadev.com
-#     ServerAlias www.test.jadadev.com
-#     DocumentRoot "${root}/test-jadadev-com"
-#     <Directory "${root}/test-jadadev-com">
+#     ServerName wordpress.example.com
+#     ServerAlias www.wordpress.example.com
+#     DocumentRoot "${root}/wordpress10312026"
+#     <Directory "${root}/wordpress10312026">
 #         Options -Indexes +FollowSymLinks
 #         AllowOverride All
 #         Require all granted
@@ -344,13 +359,13 @@ bind-address=127.0.0.1
 # </VirtualHost>
 #
 # <VirtualHost *:${settings.apacheSslPort}>
-#     ServerName test.jadadev.com
-#     ServerAlias www.test.jadadev.com
-#     DocumentRoot "${root}/test-jadadev-com"
+#     ServerName wordpress.example.com
+#     ServerAlias www.wordpress.example.com
+#     DocumentRoot "${root}/wordpress10312026"
 #     SSLEngine on
-#     SSLCertificateFile "certificates/test-jadadev-com/server.crt"
-#     SSLCertificateKeyFile "certificates/test-jadadev-com/server.key"
-#     <Directory "${root}/test-jadadev-com">
+#     SSLCertificateFile "certificates/wordpress10312026/server.crt"
+#     SSLCertificateKeyFile "certificates/wordpress10312026/server.key"
+#     <Directory "${root}/wordpress10312026">
 #         Options -Indexes +FollowSymLinks
 #         AllowOverride All
 #         Require all granted
@@ -379,7 +394,7 @@ bind-address=127.0.0.1
     const end = '# END WEEBX SECURITY DEFAULTS'
     const pattern = new RegExp(`${begin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'g')
     current = current.replace(pattern, '').trimEnd()
-    const block = apacheSecurityBlock(settings.htdocsRoot)
+    const block = apacheSecurityBlock(paths.mainSite, paths.phpMyAdmin)
     await backupAndWrite(paths.apacheConf, `${current}\r\n\r\n${block.replace(/\n/g, '\r\n')}`)
   }
 

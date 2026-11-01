@@ -1,7 +1,7 @@
-import { execFile } from 'node:child_process'
+import { execFile, type SpawnOptions } from 'node:child_process'
 import { promisify } from 'node:util'
 import { rm } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
@@ -105,51 +105,222 @@ export async function stopStackProcesses(runtimeRoot?: string): Promise<{ apache
   }
 }
 
+export const NIL_PRODUCT_GUID = '{00000000-0000-0000-0000-000000000000}'
+/** Stable electron-builder MSI UpgradeCode for appId `com.jadadev.weebx`. */
+export const WEEBX_MSI_UPGRADE_CODE = '{61426C6F-20E7-5607-9CB4-9839BDA579D6}'
+
 export interface WeebXUninstallEntry {
   guid: string
   key: string
+  displayName?: string | null
+  uninstallString?: string | null
+  quietUninstallString?: string | null
+  storedProduct?: string | null
+  windowsInstaller?: boolean
 }
 
-export async function findWeebXUninstallEntry(): Promise<WeebXUninstallEntry | null> {
+export interface WeebXUninstallPlan {
+  productCodes: string[]
+  leftoverKeys: string[]
+  installFolder?: string
+}
+
+export function productGuidFrom(value: string | null | undefined): string | undefined {
+  const match = String(value ?? '').match(/\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}/i)
+  const guid = match?.[0].toUpperCase()
+  if (!guid || guid === NIL_PRODUCT_GUID) return undefined
+  return guid
+}
+
+export function isUsableProductGuid(value: string | null | undefined): value is string {
+  return Boolean(productGuidFrom(value))
+}
+
+export function isWeebXUninstallDisplayName(display: string | null | undefined): boolean {
+  if (!display) return false
+  const name = display.trim()
+  return /^weebx$/i.test(name) || name.toLowerCase().startsWith('weebx ')
+}
+
+export function isWeebXManagedUninstallCommand(value: string | null | undefined): boolean {
+  return /weebx\.exe["']?\s+--uninstall/i.test(String(value ?? ''))
+}
+
+export function parseInstalledProductLines(stdout: string): string[] {
+  return [...new Set(String(stdout).split(/\r?\n/).map((line) => productGuidFrom(line)).filter((guid): guid is string => Boolean(guid)))]
+}
+
+export function preferWeebXUninstallEntry(candidates: WeebXUninstallEntry[], installed = new Set<string>()): WeebXUninstallEntry | null {
+  const usable = candidates.filter((entry) => isUsableProductGuid(entry.guid) && (!installed.size || installed.has(entry.guid.toUpperCase())))
+  if (!usable.length) return null
+  const score = (entry: WeebXUninstallEntry): number => {
+    let value = 0
+    if (/^HKEY_LOCAL_MACHINE\\/i.test(entry.key) || /^HKLM\\/i.test(entry.key)) value += 8
+    if (/\\Uninstall\\\{[0-9A-F-]{36}\}/i.test(entry.key)) value += 16
+    if (productGuidFrom(entry.key) === entry.guid.toUpperCase()) value += 4
+    if (entry.windowsInstaller) value += 12
+    if (isWeebXUninstallDisplayName(entry.displayName)) value += 10
+    if (installed.has(entry.guid.toUpperCase())) value += 32
+    return value
+  }
+  return [...usable].sort((left, right) => score(right) - score(left))[0]
+}
+
+export function packagedInstallFolder(exePath: string, packaged = true): string | undefined {
+  if (!packaged || !exePath) return undefined
+  const folder = dirname(exePath)
+  if (basename(folder).toLowerCase() !== 'weebx') return undefined
+  return folder
+}
+
+async function listUninstallKeysContainingWeebX(): Promise<string[]> {
   const hives = [
-    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
     'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-    'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+    'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
   ]
+  const keys: string[] = []
   for (const hive of hives) {
     try {
       const { stdout } = await execFileAsync('reg.exe', ['query', hive, '/s', '/f', 'WeebX', '/d'], { windowsHide: true, timeout: 12000 })
-      const key = stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => /\\Uninstall\\/i.test(line))
-      if (!key) continue
-      const display = await queryRegValue(key, 'DisplayName')
-      if (display && !/^weebx$/i.test(display) && !display.toLowerCase().startsWith('weebx ')) continue
-      const uninstall = await queryRegValue(key, 'UninstallString')
-      const stored = await queryRegValue(key, 'WeebXMsiProduct')
-      const guid = stored?.match(/\{[0-9A-F-]+\}/i)?.[0]
-        || key.match(/\{[0-9A-F-]+\}/i)?.[0]
-        || uninstall?.match(/\{[0-9A-F-]+\}/i)?.[0]
-      if (guid) return { guid, key }
+      keys.push(...stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^HKEY_.+\\Uninstall\\/i.test(line)))
     } catch { /* hive missing */ }
   }
-  return null
+  return [...new Set(keys)]
+}
+
+async function readUninstallCandidate(key: string): Promise<WeebXUninstallEntry | null> {
+  const displayName = await queryRegValue(key, 'DisplayName')
+  const uninstallString = await queryRegValue(key, 'UninstallString')
+  const quietUninstallString = await queryRegValue(key, 'QuietUninstallString')
+  const storedProduct = await queryRegValue(key, 'WeebXMsiProduct')
+  const windowsInstaller = /^(?:0x)?1$/i.test(String(await queryRegValue(key, 'WindowsInstaller') ?? ''))
+  const guid = productGuidFrom(storedProduct) || productGuidFrom(key) || productGuidFrom(uninstallString) || productGuidFrom(quietUninstallString)
+  const looksLikeWeebX = isWeebXUninstallDisplayName(displayName) || isWeebXManagedUninstallCommand(uninstallString) || isWeebXManagedUninstallCommand(quietUninstallString) || Boolean(storedProduct && productGuidFrom(storedProduct))
+  if (!looksLikeWeebX) return null
+  return { guid: guid ?? '', key, displayName, uninstallString, quietUninstallString, storedProduct, windowsInstaller }
+}
+
+export async function listInstalledWeebXMsiProducts(): Promise<{ codes: string[]; queryOk: boolean }> {
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$installer = New-Object -ComObject WindowsInstaller.Installer',
+    `$upgrade = '${WEEBX_MSI_UPGRADE_CODE}'`,
+    '$codes = New-Object System.Collections.Generic.List[string]',
+    'try { foreach ($code in @($installer.RelatedProducts($upgrade))) { if ($code) { [void]$codes.Add(([string]$code).ToUpper()) } } } catch {}',
+    'try { foreach ($code in @($installer.Products())) { $name = ""; try { $name = [string]$installer.ProductInfo($code, "ProductName") } catch {}; if ($name -match "^WeebX(\\s|$)") { [void]$codes.Add(([string]$code).ToUpper()) } } } catch {}',
+    '$codes | Select-Object -Unique'
+  ].join('; ')
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 20000 })
+    return { codes: parseInstalledProductLines(stdout), queryOk: true }
+  } catch {
+    return { codes: [], queryOk: false }
+  }
+}
+
+export async function collectWeebXUninstallCandidates(): Promise<WeebXUninstallEntry[]> {
+  const candidates: WeebXUninstallEntry[] = []
+  for (const key of await listUninstallKeysContainingWeebX()) {
+    const candidate = await readUninstallCandidate(key)
+    if (candidate) candidates.push(candidate)
+  }
+  return candidates
+}
+
+export function leftoverWeebXUninstallKeys(candidates: WeebXUninstallEntry[], installed: Set<string>): string[] {
+  return candidates.filter((entry) => {
+    const guid = productGuidFrom(entry.guid) || productGuidFrom(entry.key) || productGuidFrom(entry.storedProduct)
+    if (guid && installed.has(guid)) return false
+    if (isWeebXUninstallDisplayName(entry.displayName) && entry.windowsInstaller && guid && !installed.has(guid) && installed.size > 0) return true
+    return isWeebXManagedUninstallCommand(entry.uninstallString) || isWeebXManagedUninstallCommand(entry.quietUninstallString) || Boolean(entry.storedProduct)
+  }).map((entry) => entry.key)
+}
+
+export async function findWeebXUninstallPlan(options?: { exePath?: string; packaged?: boolean }): Promise<WeebXUninstallPlan> {
+  const { codes, queryOk } = await listInstalledWeebXMsiProducts()
+  const installed = new Set(codes)
+  const candidates = await collectWeebXUninstallCandidates()
+  const fromNamedArp = candidates
+    .filter((entry) => isWeebXUninstallDisplayName(entry.displayName))
+    .map((entry) => productGuidFrom(entry.key) || productGuidFrom(entry.guid))
+    .filter((guid): guid is string => Boolean(guid))
+  const productCodes = queryOk ? codes : [...new Set([...codes, ...fromNamedArp])]
+  const folder = packagedInstallFolder(options?.exePath || '', options?.packaged !== false)
+  return {
+    productCodes,
+    leftoverKeys: leftoverWeebXUninstallKeys(candidates, installed),
+    ...(folder ? { installFolder: folder } : {})
+  }
+}
+
+export async function findWeebXUninstallEntry(): Promise<WeebXUninstallEntry | null> {
+  const { codes, queryOk } = await listInstalledWeebXMsiProducts()
+  const installed = new Set(codes)
+  const named = (await collectWeebXUninstallCandidates()).filter((entry) => isWeebXUninstallDisplayName(entry.displayName) && isUsableProductGuid(entry.guid))
+  return preferWeebXUninstallEntry(named, queryOk ? installed : new Set())
 }
 
 export async function findWeebXProductCode(): Promise<string | null> {
-  return (await findWeebXUninstallEntry())?.guid ?? null
+  const plan = await findWeebXUninstallPlan()
+  return plan.productCodes[0] ?? (await findWeebXUninstallEntry())?.guid ?? null
+}
+
+export async function removeOrphanWeebXUninstallKeys(): Promise<string[]> {
+  const { codes, queryOk } = await listInstalledWeebXMsiProducts()
+  if (!queryOk) return []
+  const removed: string[] = []
+  for (const key of leftoverWeebXUninstallKeys(await collectWeebXUninstallCandidates(), new Set(codes))) {
+    try {
+      await execFileAsync('reg.exe', ['delete', key, '/f'], { windowsHide: true, timeout: 8000 })
+      removed.push(key)
+    } catch { /* needs elevation or already gone */ }
+  }
+  return removed
+}
+
+/** Launch wscript through `cmd start` so Electron's Windows job cannot kill msiexec. */
+export function uninstallHelperLaunch(scriptPath: string): { file: string; args: string[]; options: SpawnOptions } {
+  return {
+    file: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', `start "WeebX Uninstall Helper" /min wscript.exe //NoLogo "${scriptPath}"`],
+    options: {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true
+    }
+  }
 }
 
 export function uninstallHelperArgs(scriptPath: string): string[] {
-  return ['//NoLogo', scriptPath]
+  return uninstallHelperLaunch(scriptPath).args
 }
 
-export function buildMsiUninstallScript(input: { guid: string; exeName?: string; removeAppData?: boolean; userData?: string; startedMarker?: string; uninstallerPid?: number }): string {
+export function buildMsiUninstallScript(input: {
+  guid?: string
+  productCodes?: string[]
+  leftoverKeys?: string[]
+  installFolder?: string
+  exeName?: string
+  removeAppData?: boolean
+  userData?: string
+  startedMarker?: string
+  uninstallerPid?: number
+}): string {
   const exe = input.exeName || 'WeebX.exe'
   const vb = (value: string): string => value.replace(/"/g, '""')
+  const productCodes = [...new Set([...(input.productCodes ?? []), input.guid].map((value) => productGuidFrom(value ?? '')).filter((guid): guid is string => Boolean(guid)))]
+  const leftoverKeys = [...new Set((input.leftoverKeys ?? []).map((key) => key.trim()).filter(Boolean))]
+  const installFolder = input.installFolder?.trim()
+  const productArray = productCodes.length ? productCodes.map((guid) => `"${guid}"`).join(',') : '""'
+  const leftoverArray = leftoverKeys.length ? leftoverKeys.map((key) => `"${vb(key)}"`).join(',') : '""'
+  const needAdmin = productCodes.length > 0 || leftoverKeys.some((key) => /HKEY_LOCAL_MACHINE\\/i.test(key)) || /\\program files/i.test(installFolder ?? '')
   const lines = [
     'Option Explicit',
     'On Error Resume Next',
     'Dim shell, fso, wmi, helperLogPath, msiLogPath, helperLog, markerFile',
-    'Dim attempt, exitCode, command',
+    'Dim attempt, exitCode, command, guid, key, productCodes, leftoverKeys, msiexec, msiNeeded, msiOk',
     'Set shell = CreateObject("WScript.Shell")',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
     'Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")',
@@ -163,35 +334,86 @@ export function buildMsiUninstallScript(input: { guid: string; exeName?: string;
       'markerFile.Close'
     ] : []),
     ...(input.uninstallerPid ? [
-      'For attempt = 1 To 20',
+      'For attempt = 1 To 45',
       `  If Not ProcessExists(${input.uninstallerPid}) Then Exit For`,
       '  WScript.Sleep 1000',
       'Next',
       `Call TerminateByPid(${input.uninstallerPid})`
     ] : [
-      'For attempt = 1 To 20',
+      'For attempt = 1 To 45',
       `  If Not ProcessNameExists("${vb(exe)}") Then Exit For`,
       '  WScript.Sleep 1000',
       'Next'
     ]),
-    // The active uninstaller has exited. WMI terminates remaining helpers and
-    // services without opening cmd.exe or relying on a command pipeline.
     `Call TerminateByName("${vb(exe)}")`,
-    'Call TerminateByName("WeebX Core.exe")', // older dual-exe builds used this name
+    'Call TerminateByName("WeebX Core.exe")',
     'Call TerminateByName("httpd.exe")',
     'Call TerminateByName("mariadbd.exe")',
     'Call TerminateByName("mysqld.exe")',
-    'WScript.Sleep 2000',
-    `command = "msiexec.exe /x ${input.guid} /passive /norestart /L*v " & Chr(34) & msiLogPath & Chr(34)`,
-    'Err.Clear',
-    'exitCode = shell.Run(command, 1, True)',
-    'If Err.Number <> 0 Then exitCode = -1',
-    'helperLog.WriteLine "MSI exit code: " & CStr(exitCode)',
-    'If exitCode <> 0 And exitCode <> 1605 And exitCode <> 3010 Then',
-    '  helperLog.Close',
-    '  MsgBox "Windows Installer could not remove WeebX." & vbCrLf & "Details: " & helperLogPath, vbOKOnly + vbCritical, "WeebX uninstall failed"',
-    '  WScript.Quit 1',
-    'End If'
+    `For attempt = 1 To 30`,
+    `  If Not ProcessNameExists("${vb(exe)}") Then Exit For`,
+    `  Call TerminateByName("${vb(exe)}")`,
+    '  WScript.Sleep 1000',
+    'Next',
+    'WScript.Sleep 1500',
+    ...(needAdmin ? [
+      'If WScript.Arguments.Count = 0 Then',
+      '  helperLog.WriteLine "Requesting administrator approval to finish uninstall."',
+      '  helperLog.Close',
+      '  CreateObject("Shell.Application").ShellExecute "wscript.exe", Chr(34) & WScript.ScriptFullName & Chr(34) & " elevated", "", "runas", 1',
+      '  WScript.Quit 0',
+      'End If',
+      'Set helperLog = fso.OpenTextFile(helperLogPath, 8, True)',
+      'helperLog.WriteLine Now & " - elevated uninstall helper running."'
+    ] : []),
+    'msiNeeded = False',
+    'msiOk = False',
+    `productCodes = Array(${productArray})`,
+    'msiexec = Chr(34) & shell.ExpandEnvironmentStrings("%SystemRoot%\\System32\\msiexec.exe") & Chr(34)',
+    'For Each guid In productCodes',
+    '  If guid <> "" Then',
+    '    msiNeeded = True',
+    '    command = msiexec & " /x " & guid & " /qb /norestart /L*v " & Chr(34) & msiLogPath & Chr(34)',
+    '    helperLog.WriteLine "Running " & command',
+    '    For attempt = 1 To 3',
+    '      Err.Clear',
+    '      exitCode = shell.Run(command, 1, True)',
+    '      If Err.Number <> 0 Then exitCode = -1',
+    '      helperLog.WriteLine "MSI " & guid & " attempt " & CStr(attempt) & " exit code: " & CStr(exitCode)',
+    '      If exitCode = 0 Or exitCode = 3010 Then',
+    '        msiOk = True',
+    '        Exit For',
+    '      End If',
+    '      If exitCode <> 1618 Then Exit For',
+    '      WScript.Sleep 3000',
+    '    Next',
+    '    If exitCode = 1605 Then helperLog.WriteLine "Product " & guid & " is not registered."',
+    '    If msiOk Then Exit For',
+    '  End If',
+    'Next',
+    'If msiNeeded = False Then msiOk = True',
+    `leftoverKeys = Array(${leftoverArray})`,
+    'For Each key In leftoverKeys',
+    '  If key <> "" Then',
+    '    helperLog.WriteLine "Removing leftover uninstall key " & key',
+    '    shell.Run "reg.exe delete " & Chr(34) & key & Chr(34) & " /f", 0, True',
+    '  End If',
+    'Next',
+    ...(installFolder ? [
+      `If fso.FolderExists("${vb(installFolder)}") Then`,
+      `  helperLog.WriteLine "Removing leftover application folder ${vb(installFolder)}"`,
+      `  fso.DeleteFolder "${vb(installFolder)}", True`,
+      'End If',
+      `If (msiOk = False) And fso.FolderExists("${vb(installFolder)}") Then`,
+      '  helperLog.Close',
+      '  MsgBox "Windows Installer could not remove WeebX." & vbCrLf & "Details: " & helperLogPath, vbOKOnly + vbCritical, "WeebX uninstall failed"',
+      '  WScript.Quit 1',
+      'End If'
+    ] : [
+      'If (msiNeeded = True) And (msiOk = False) Then',
+      '  helperLog.WriteLine "MSI product was not registered; leftover WeebX registration was removed."',
+      'End If'
+    ])
   ]
   if (input.removeAppData && input.userData) {
     lines.push(
@@ -237,10 +459,15 @@ export function buildMsiUninstallScript(input: { guid: string; exeName?: string;
 }
 
 export async function pointUninstallToApp(exePath: string): Promise<void> {
-  const entry = await findWeebXUninstallEntry()
-  if (!entry) return
+  await removeOrphanWeebXUninstallKeys().catch(() => [])
+  const plan = await findWeebXUninstallPlan({ exePath, packaged: true })
+  const guid = plan.productCodes[0]
+  if (!guid) return
+  const entry = (await collectWeebXUninstallCandidates()).find((item) => (productGuidFrom(item.key) || item.guid) === guid && isWeebXUninstallDisplayName(item.displayName))
+    ?? (await findWeebXUninstallEntry())
+  if (!entry || !isWeebXUninstallDisplayName(entry.displayName) || !isUsableProductGuid(entry.guid)) return
   const command = `"${exePath}" --uninstall`
-  await execFileAsync('reg.exe', ['add', entry.key, '/v', 'WeebXMsiProduct', '/t', 'REG_SZ', '/d', entry.guid, '/f'], { windowsHide: true })
+  await execFileAsync('reg.exe', ['add', entry.key, '/v', 'WeebXMsiProduct', '/t', 'REG_SZ', '/d', guid, '/f'], { windowsHide: true })
   await execFileAsync('reg.exe', ['add', entry.key, '/v', 'UninstallString', '/t', 'REG_SZ', '/d', command, '/f'], { windowsHide: true })
   await execFileAsync('reg.exe', ['add', entry.key, '/v', 'QuietUninstallString', '/t', 'REG_SZ', '/d', command, '/f'], { windowsHide: true })
 }

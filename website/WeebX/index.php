@@ -54,7 +54,7 @@ function assetUrl(string $relativePath): string
     return $relativePath . '?v=' . rawurlencode($version);
 }
 
-$version = '2.2.15';
+$version = '2.2.20';
 $filesDir = __DIR__ . DIRECTORY_SEPARATOR . 'Files';
 $msi = pickDownload($filesDir, ['WeebX-Installer-x64.msi']);
 $zip = pickDownload($filesDir, ['WeebX.zip', 'WeebX-Portable.zip']);
@@ -155,7 +155,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
         <div class="section-heading"><span>EVERYTHING IN ONE PLACE</span><h2>Web hosting without the friction.</h2><p>Develop locally, then run production websites from the same focused Windows control plane.</p></div>
         <div class="feature-grid">
             <article class="feature-card featured"><div class="feature-icon">◫</div><span>CONTROL</span><h3>Start, stop, recover.</h3><p>Manage Apache and MariaDB independently or together. Optional crash recovery restarts either service after the delay you choose.</p><div class="mini-service-pair"><div class="mini-status"><i></i><b>Apache is running</b><small>2.4.69 · Auto-restart on</small></div><div class="mini-status"><i></i><b>MariaDB is running</b><small>12.3.3 · Loopback only</small></div></div></article>
-            <article class="feature-card"><div class="feature-icon">▣</div><span>APPS</span><h3>One-click applications.</h3><p>Install WordPress, Nextcloud, Moodle, GitList, PrivateBin, and 12 more official open-source apps. Thirteen finish automatically; four keep a browser finish. Matching PHP, virtual host, and least-privilege database are already prepared.</p></article>
+            <article class="feature-card"><div class="feature-icon">▣</div><span>APPS</span><h3>One-click applications.</h3><p>Install WordPress, Nextcloud, Moodle, GitList, PrivateBin, and 12 more official open-source apps into dated folders with clean subdomains. localhost keeps serving the main site. Point DNS at this host and Apache matches that virtual host.</p></article>
             <article class="feature-card"><div class="feature-icon">&lt;/&gt;</div><span>PHP</span><h3>Switch versions cleanly.</h3><p>Use bundled builds, discover new official x64 NTS releases automatically, or validate and import your own PHP ZIP.</p></article>
             <article class="feature-card"><div class="feature-icon">⌂</div><span>ISOLATED SITES</span><h3>One policy per website.</h3><p>Give every host its own PHP version, extensions, php.ini, sessions, temporary storage, upload limits, logs, database user, and NTFS permission policy.</p></article>
             <article class="feature-card"><div class="feature-icon">⌁</div><span>PORTABLE</span><h3>Your projects stay yours.</h3><p>Keep websites and MariaDB data through normal updates, or pack the whole environment when you need to move it.</p></article>
@@ -203,7 +203,7 @@ $uniqueDownloads = (int) $downloadStats['uniqueDownloads'];
             <article><b>PB</b><span>PrivateBin</span><small>Developer · auto setup</small></article>
         </div>
         <ol class="apps-flow">
-            <li><small>01</small><b>Choose the website</b><span>Default localhost or a side folder as a local DNS host, with HTTP and optional local HTTPS you can edit later from the app.</span></li>
+            <li><small>01</small><b>Choose the website</b><span>Dedicated virtual host, or the main site in htdocs\main-site. Optionally empty the main site first; otherwise matching files are replaced.</span></li>
             <li><small>02</small><b>Match PHP and the database</b><span>Required modules stay on. WeebX creates a unique MariaDB login scoped to one database, with a Windows-encrypted password.</span></li>
             <li><small>03</small><b>Install, then open</b><span>Automatic apps finish through their official installer. Guided apps stay local-only until setup files exist, then the installer is removed. Installed apps can reveal DNS and database details.</span></li>
         </ol>

@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import type {
@@ -8,12 +8,15 @@ import type {
 import type { JsonStore } from './store'
 import { vhostPlaceholderHtml, type VhostManager } from './vhost-manager'
 import type { LogBuffer } from './logs'
-import { catalogConnectionLinks, catalogDownloadUrls, findPreinstalledApp, publicPreinstalledAppCatalog, type InternalPreinstalledApp } from './preinstalled-app-catalog'
+import { catalogConnectionLinks, catalogDownloadUrls, catalogRuntimePolicy, findPreinstalledApp, publicPreinstalledAppCatalog, type InternalPreinstalledApp } from './preinstalled-app-catalog'
+import { appFolderSlug, datedAppFolder, defaultAppDomain, isIntentionalMainSiteInstall, isMainSiteHostname, MAIN_SITE_FOLDER, MAIN_SITE_VHOST_ID, nextDatedAppFolder, occupiesMainSite, RESERVED_HTDOCS_NAMES } from '../shared/site-layout'
+import { mainSitePath } from './paths'
+import { ensureWelcomeSite, removeManagedWelcomeFiles } from './welcome-site'
 import { generateStrongPassword } from './security'
 import { runMariaDbClient } from './mariadb-password'
 import { siteDatabaseCredential, siteProfileOptions, siteProfilePaths } from './site-profile'
 import { downloadTrustedHttps } from './secure-download'
-import { configureCatalogApp, siteUrl } from './app-installers'
+import { configureCatalogApp, repairGitListFiles, siteUrl } from './app-installers'
 
 type ProgressListener = (progress: PreinstalledAppProgress) => void
 export const APP_DOWNLOAD_HOSTS = new Set([
@@ -23,8 +26,9 @@ export const APP_DOWNLOAD_HOSTS = new Set([
   'assets.prestashop3.com'
 ])
 const APP_DOWNLOAD_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 WeebX-Apps'
-const SAFE_DEFAULT_ENTRIES = new Set(['index.php', 'phpinfo.php', 'assets', 'phpmyadmin'])
-const PRESERVED_DEFAULT_ENTRIES = new Set(['phpmyadmin'])
+const SAFE_DEFAULT_ENTRIES = new Set(['index.php', 'phpinfo.php', 'assets', 'phpmyadmin', 'main-site'])
+const SAFE_MAIN_SITE_ENTRIES = new Set(['index.php', 'phpinfo.php', 'assets'])
+const PRESERVED_DEFAULT_ENTRIES = new Set(['phpmyadmin', 'main-site'])
 const DATABASE_IDENTIFIER = /^[a-z][a-z0-9_]{0,62}$/i
 
 function within(root: string, candidate: string): boolean {
@@ -49,6 +53,10 @@ export function normalizeAppKey(value: string, fallback: string): string {
 
 export function unexpectedDefaultEntries(entries: string[]): string[] {
   return entries.filter((name) => !SAFE_DEFAULT_ENTRIES.has(name.toLowerCase()))
+}
+
+export function unexpectedMainSiteEntries(entries: string[]): string[] {
+  return entries.filter((name) => !SAFE_MAIN_SITE_ENTRIES.has(name.toLowerCase()))
 }
 
 export function isRecoverableVhostPlaceholder(entries: string[], content: string, domain: string): boolean {
@@ -122,6 +130,111 @@ export class PreinstalledAppManager {
     return (await this.store.getInstalledApps()).filter((item) => item.status !== 'removed')
   }
 
+  /** Move leftover default-site apps out of the htdocs root and off the localhost vhost. */
+  async migrateLayout(): Promise<void> {
+    const settings = await this.store.getSettings()
+    const all = await this.store.getInstalledApps()
+    const hosts = await this.vhosts.list()
+    let changed = false
+    for (const record of all.filter((item) => item.status !== 'removed')) {
+      if (isIntentionalMainSiteInstall(record, settings.htdocsRoot)) continue
+      const atRoot = resolve(record.documentRoot) === resolve(settings.htdocsRoot)
+      const usesLocalhost = isMainSiteHostname(record.domain)
+      if (!atRoot && !usesLocalhost && record.location !== 'default') continue
+      let documentRoot = record.documentRoot
+      if (atRoot) {
+        const folderName = await this.allocateAppFolder(settings.htdocsRoot, record.catalogId, record.catalogId)
+        const dest = resolve(settings.htdocsRoot, folderName)
+        await mkdir(dest, { recursive: true })
+        const skip = new Set<string>([...RESERVED_HTDOCS_NAMES, folderName.toLowerCase()])
+        for (const host of hosts) {
+          for (const root of [host.documentRoot, host.applicationRoot]) {
+            if (!root) continue
+            const top = relative(resolve(settings.htdocsRoot), resolve(root)).split(/[\\/]/)[0]
+            if (top && top !== '.' && !top.startsWith('..')) skip.add(top.toLowerCase())
+          }
+        }
+        for (const name of await readdir(settings.htdocsRoot).catch(() => [])) {
+          if (skip.has(name.toLowerCase())) continue
+          await rename(join(settings.htdocsRoot, name), join(dest, name)).catch(async () => {
+            await cp(join(settings.htdocsRoot, name), join(dest, name), { recursive: true })
+            await rm(join(settings.htdocsRoot, name), { recursive: true, force: true })
+          })
+        }
+        const app = findPreinstalledApp(record.catalogId)
+        documentRoot = dest
+        record.documentRoot = dest
+        if (record.siteId) {
+          await this.vhosts.relocate(record.siteId, {
+            documentRoot: app?.webRoot ? resolve(dest, app.webRoot) : dest,
+            applicationRoot: dest
+          }).catch(() => undefined)
+        }
+      }
+      if (usesLocalhost) {
+        const domain = await this.availableDomain(record.catalogId, all, await this.vhosts.list())
+        record.domain = domain
+        if (record.siteId) await this.vhosts.relocate(record.siteId, { serverName: domain }).catch(() => undefined)
+      }
+      record.location = 'side'
+      record.url = `${siteUrl({ domain: record.domain, https: /^https:/i.test(record.url) } as PreinstalledAppInstallRequest, settings)}/`
+      if (record.setupUrl) {
+        try {
+          const current = new URL(record.setupUrl)
+          record.setupUrl = new URL(`${current.pathname}${current.search}`.replace(/^\//, ''), record.url).toString()
+        } catch { /* keep */ }
+      }
+      record.updatedAt = new Date().toISOString()
+      changed = true
+      await this.audit(record.id, record.catalogId, 'configuring', 'info', `Moved ${record.name} to a dedicated virtual host at ${record.domain} (${documentRoot}).`)
+    }
+    if (changed) await this.store.setInstalledApps(all)
+    await this.repairCatalogRuntimes()
+  }
+
+  private async repairCatalogRuntimes(): Promise<void> {
+    const records = await this.list()
+    const hosts = await this.vhosts.list()
+    for (const host of hosts) {
+      if (host.id === MAIN_SITE_VHOST_ID || !isMainSiteHostname(host.serverName)) continue
+      const domain = await this.availableDomain(host.name, records, await this.vhosts.list())
+      await this.vhosts.relocate(host.id, { serverName: domain }).catch(() => undefined)
+    }
+    for (const record of records) {
+      if (record.catalogId !== 'gitlist') continue
+      const app = findPreinstalledApp(record.catalogId)
+      if (!app) continue
+      const siteDocumentRoot = app.webRoot ? resolve(record.documentRoot, app.webRoot) : record.documentRoot
+      await repairGitListFiles(record.documentRoot, siteDocumentRoot).catch(() => undefined)
+      const site = hosts.find((item) => item.id === record.siteId)
+      const policy = catalogRuntimePolicy(record.catalogId)
+      if (!site?.isolation) continue
+      const customIni = site.isolation.customIni.includes('E_DEPRECATED')
+        ? site.isolation.customIni
+        : [site.isolation.customIni.trim(), policy.customIni].filter(Boolean).join('\n')
+      if (!site.isolation.disableDangerousFunctions && !site.isolation.openBasedir && customIni === site.isolation.customIni) continue
+      const database = site.isolation.database
+      await this.vhosts.updateProfile(site.id, {
+        phpVersion: site.isolation.phpVersion,
+        phpProfile: site.isolation.phpProfile,
+        phpExtensions: site.isolation.phpExtensions,
+        memoryLimit: site.isolation.memoryLimit,
+        maxExecutionTime: site.isolation.maxExecutionTime,
+        maxInputTime: site.isolation.maxInputTime,
+        maxInputVars: site.isolation.maxInputVars,
+        uploadMaxFilesize: site.isolation.uploadMaxFilesize,
+        postMaxSize: site.isolation.postMaxSize,
+        maxFileUploads: site.isolation.maxFileUploads,
+        openBasedir: policy.openBasedir,
+        disableDangerousFunctions: policy.disableDangerousFunctions,
+        allowUserIni: site.isolation.allowUserIni,
+        permissionPreset: site.isolation.permissionPreset,
+        customIni,
+        database: database ? { databaseName: database.databaseName, username: database.username, access: database.access } : undefined
+      }).catch(() => undefined)
+    }
+  }
+
   async connection(id: string): Promise<PreinstalledAppConnection> {
     const record = findInstalledApp(await this.list(), id)
     if (!record) throw new Error('Installed app not found.')
@@ -171,36 +284,52 @@ export class PreinstalledAppManager {
     }
 
     const settings = await this.store.getSettings()
-    const documentRoot = request.location === 'default' ? resolve(settings.htdocsRoot) : resolve(settings.htdocsRoot, request.projectName)
+    const onMainSite = request.location === 'default'
+    const folderName = onMainSite ? MAIN_SITE_FOLDER : await this.allocateAppFolder(settings.htdocsRoot, request.projectName, app.id)
     const activeRecords = await this.list()
-    let suggestedProjectName: string | undefined
-    if (request.location === 'default' && activeRecords.some((item) => item.location === 'default')) {
-      checks.push({ id: 'destination', status: 'blocked', title: 'Default website is already managed', detail: 'Uninstall its managed app first or choose a side website.' })
+    const occupying = activeRecords.find((item) => occupiesMainSite(item, settings.htdocsRoot))
+    if (onMainSite && occupying) {
+      checks.push({
+        id: 'destination', status: 'blocked', title: 'Main website is already in use',
+        detail: `${occupying.name} already occupies htdocs\\main-site. Uninstall it first, or install this app on a dedicated virtual host.`
+      })
+    } else if (onMainSite) {
+      const extra = unexpectedMainSiteEntries(await this.directoryEntries(mainSitePath(settings.htdocsRoot)))
+      checks.push({
+        id: 'destination',
+        status: request.clearMainSite && extra.length ? 'warning' : 'ready',
+        title: request.clearMainSite && extra.length ? 'Existing main-site files will be deleted' : 'Main website is ready',
+        detail: request.clearMainSite
+          ? (extra.length
+            ? `Delete is on: WeebX will empty htdocs\\main-site (${extra.slice(0, 4).join(', ')}${extra.length > 4 ? '…' : ''}), then copy ${app.name}.`
+            : `Files go in htdocs\\main-site. The dashboard Website button will open ${app.name}.`)
+          : (extra.length
+            ? `Delete is off: matching files in htdocs\\main-site will be replaced. Extra files stay in place.`
+            : `Files go in htdocs\\main-site. Matching files are replaced; extra files stay. The dashboard Website button will open ${app.name}.`)
+      })
     } else {
-      let entries = await this.directoryEntries(documentRoot)
-      if (request.location === 'side' && await this.isRecoverablePlaceholder(documentRoot, entries, request.domain)) entries = []
-      const unexpected = request.location === 'default' ? unexpectedDefaultEntries(entries) : entries
-      if (unexpected.length) {
-        if (request.location === 'side') suggestedProjectName = await this.availableProjectName(settings.htdocsRoot, request.projectName)
-        checks.push({
-          id: 'destination', status: 'blocked',
-          title: request.location === 'default' ? 'Default website has other files' : `Folder “${request.projectName}” is already in use`,
-          detail: request.location === 'default'
-            ? `Move these unmanaged items first or choose a side website: ${unexpected.slice(0, 5).join(', ')}${unexpected.length > 5 ? '…' : ''}. WeebX will preserve phpMyAdmin.`
-            : `Choose another project name. Suggested available name: ${suggestedProjectName}.`
-        })
-      } else {
-        checks.push({ id: 'destination', status: 'ready', title: 'Destination is ready', detail: request.location === 'default' ? 'The welcome files can be replaced safely; phpMyAdmin will be preserved.' : `The ${request.projectName} folder is empty or will be created.` })
-      }
+      checks.push({
+        id: 'destination', status: 'ready', title: 'Destination is ready',
+        detail: `Files go in htdocs\\${folderName}. localhost keeps serving htdocs\\main-site.`
+      })
     }
 
-    const vhostConflict = (await this.vhosts.list()).some((item) => item.serverName === request.domain || item.aliases.includes(request.domain))
-    if (activeRecords.some((item) => item.domain === request.domain) || vhostConflict) {
-      checks.push({ id: 'domain', status: 'blocked', title: 'Domain is already assigned', detail: `${request.domain} is used by another WeebX website. Choose a different domain.` })
-    } else checks.push({ id: 'domain', status: 'ready', title: 'Domain is available', detail: request.domain })
+    const vhostConflict = (await this.vhosts.list()).some((item) => item.id !== MAIN_SITE_VHOST_ID && (item.serverName === request.domain || item.aliases.includes(request.domain)))
+    let suggestedDomain: string | undefined
+    if (onMainSite) {
+      checks.push({ id: 'domain', status: 'ready', title: 'Main website hostname', detail: 'localhost and 127.0.0.1 will serve this application from htdocs\\main-site.' })
+    } else if (activeRecords.some((item) => item.domain === request.domain) || vhostConflict || isMainSiteHostname(request.domain)) {
+      suggestedDomain = await this.availableDomain(request.projectName || app.id, activeRecords, await this.vhosts.list())
+      checks.push({
+        id: 'domain', status: 'blocked', title: isMainSiteHostname(request.domain) ? 'localhost is the main website' : 'Domain is already assigned',
+        detail: isMainSiteHostname(request.domain)
+          ? `Use the Main website option to occupy localhost, or a virtual-host name such as ${suggestedDomain}.`
+          : `${request.domain} is used by another WeebX website. Suggested hostname: ${suggestedDomain}.`
+      })
+    } else checks.push({ id: 'domain', status: 'ready', title: 'Virtual host is ready', detail: `${request.domain} will be a dedicated Apache virtual host. Point public DNS at this machine to serve this subdomain.` })
 
     let requiresElevation = false
-    if (request.location === 'side' && request.updateHosts && !usesAutomaticLocalhostResolution(request.domain)) {
+    if (request.updateHosts && !usesAutomaticLocalhostResolution(request.domain)) {
       const missingHosts = await this.vhosts.hostsNeedingUpdate([request.domain])
       requiresElevation = missingHosts.length > 0 && !elevated
       checks.push(requiresElevation
@@ -209,10 +338,10 @@ export class PreinstalledAppManager {
     } else if (usesAutomaticLocalhostResolution(request.domain)) {
       checks.push({ id: 'hosts', status: 'ready', title: 'No Administrator access needed', detail: `${request.domain} uses localhost resolution automatically; the Windows hosts file will not be changed.` })
     } else {
-      checks.push({ id: 'hosts', status: request.location === 'side' ? 'warning' : 'ready', title: request.location === 'side' ? 'Manual domain mapping selected' : 'No hosts-file change needed', detail: request.location === 'side' ? `You must map ${request.domain} yourself before it opens in a browser.` : 'localhost works without administrator access.' })
+      checks.push({ id: 'hosts', status: 'warning', title: 'Manual domain mapping selected', detail: `Map ${request.domain} in DNS or the Windows hosts file so browsers reach this virtual host.` })
     }
     checks.push({ id: 'services', status: 'ready', title: 'Services are automatic', detail: `WeebX will start Apache${app.database ? ' and MariaDB' : ''}, then apply the isolated site profile.` })
-    return { ready: !checks.some((check) => check.status === 'blocked'), requiresElevation, ...(suggestedProjectName ? { suggestedProjectName } : {}), checks }
+    return { ready: !checks.some((check) => check.status === 'blocked'), requiresElevation, suggestedFolder: folderName, ...(suggestedDomain ? { suggestedDomain } : {}), checks }
   }
 
   async markSetupComplete(id: string): Promise<PreinstalledAppRecord> {
@@ -253,22 +382,24 @@ export class PreinstalledAppManager {
       this.emit(installId, app.id, 'validating', 2, `Checking ${app.name} requirements.`)
       const request = await this.validateRequest(raw, app)
       const settings = await this.store.getSettings()
-      documentRoot = request.location === 'default' ? resolve(settings.htdocsRoot) : resolve(settings.htdocsRoot, request.projectName)
-      if (!within(settings.htdocsRoot, documentRoot)) throw new Error('The application folder must stay inside htdocs.')
+      const onMainSite = request.location === 'default'
+      const folderName = onMainSite ? MAIN_SITE_FOLDER : await this.allocateAppFolder(settings.htdocsRoot, request.projectName, app.id)
+      documentRoot = onMainSite ? resolve(mainSitePath(settings.htdocsRoot)) : resolve(settings.htdocsRoot, folderName)
+      if (!within(settings.htdocsRoot, documentRoot) || resolve(documentRoot) === resolve(settings.htdocsRoot)) {
+        throw new Error('The application folder must stay inside htdocs and cannot replace the htdocs root.')
+      }
       const activeRecords = await this.list()
-      if (request.location === 'default' && activeRecords.some((item) => item.location === 'default')) throw new Error('The default website already has a managed app. Uninstall it first or choose a side website.')
-      if (activeRecords.some((item) => item.domain === request.domain)) throw new Error('That domain is already used by another installed app.')
-      if (request.location === 'side') {
+      if (onMainSite) {
+        if (activeRecords.some((item) => occupiesMainSite(item, settings.htdocsRoot))) {
+          throw new Error('The main website already has a catalog application. Uninstall it first, or install this app on a dedicated virtual host.')
+        }
+      } else if (activeRecords.some((item) => item.domain === request.domain) || isMainSiteHostname(request.domain)) {
+        throw new Error('That hostname is already used by another website. Choose a different virtual-host name.')
+      }
+      if (!onMainSite) {
         let entries = await this.directoryEntries(documentRoot)
         if (await this.isRecoverablePlaceholder(documentRoot, entries, request.domain)) entries = []
-        if (entries.length) {
-          const suggestion = await this.availableProjectName(settings.htdocsRoot, request.projectName)
-          throw new Error(`The folder “${request.projectName}” is not empty. Choose another project name, such as “${suggestion}”.`)
-        }
-      } else {
-        const entries = await this.directoryEntries(documentRoot)
-        const unexpected = unexpectedDefaultEntries(entries)
-        if (unexpected.length) throw new Error(`The default website contains unmanaged files (${unexpected.slice(0, 3).join(', ')}). Move them first or install as a side website.`)
+        if (entries.length) throw new Error(`The folder “${folderName}” is not empty. Try installing again so WeebX can pick the next dated folder.`)
       }
 
       const tempRoot = join(settings.runtimeRoot, 'tmp', 'apps', installId)
@@ -280,39 +411,45 @@ export class PreinstalledAppManager {
       await this.extractArchive(archive, staged)
       const payload = await this.findPayload(staged, app.payloadHints)
       await this.assertPayload(payload)
-      if (request.location === 'default') {
-        const protectedCollision = (await readdir(payload)).find((name) => PRESERVED_DEFAULT_ENTRIES.has(name.toLowerCase()))
-        if (protectedCollision) throw new Error(`${app.name} includes a protected “${protectedCollision}” path and cannot be installed as the default website.`)
+      if (onMainSite) {
+        backupPath = join(tempRoot, 'main-site-backup')
+        await mkdir(backupPath, { recursive: true })
+        for (const name of await readdir(documentRoot).catch(() => [])) {
+          await cp(join(documentRoot, name), join(backupPath, name), { recursive: true })
+        }
       }
-
       const databasePassword = app.database ? generateStrongPassword(28) : undefined
       const siteDocumentRoot = app.webRoot ? resolve(documentRoot, app.webRoot) : documentRoot
       if (!within(documentRoot, siteDocumentRoot)) throw new Error('The catalog contains an unsafe public web-root path.')
+      const runtime = catalogRuntimePolicy(app.id)
       const isolation: SiteIsolationDraft = {
         phpVersion: request.phpVersion, phpProfile: request.phpProfile ?? 'production', phpExtensions: request.phpExtensions,
         memoryLimit: app.id === 'nextcloud' || app.id === 'moodle' ? '512M' : '256M',
         maxExecutionTime: app.id === 'nextcloud' || app.id === 'moodle' ? 300 : 120,
         maxInputTime: 120, maxInputVars: app.id === 'prestashop' ? 10000 : 5000,
         uploadMaxFilesize: app.id === 'nextcloud' ? '512M' : '128M', postMaxSize: app.id === 'nextcloud' ? '512M' : '128M', maxFileUploads: 40,
-        openBasedir: true, disableDangerousFunctions: request.disableDangerousFunctions !== false, allowUserIni: request.allowUserIni === true, permissionPreset: 'private', customIni: '',
+        openBasedir: runtime.openBasedir, disableDangerousFunctions: app.id === 'gitlist' ? false : request.disableDangerousFunctions !== false, allowUserIni: request.allowUserIni === true, permissionPreset: 'private', customIni: runtime.customIni,
         database: app.database ? { databaseName: request.databaseName!, username: request.databaseUsername!, access: 'read-write', password: databasePassword } : undefined
       }
-      if (request.location === 'default') {
-        backupPath = join(settings.runtimeRoot, 'app-backups', installId)
-        await mkdir(backupPath, { recursive: true })
-        for (const name of await readdir(documentRoot).catch(() => [])) {
-          if (!PRESERVED_DEFAULT_ENTRIES.has(name.toLowerCase())) await cp(join(documentRoot, name), join(backupPath, name), { recursive: true })
-        }
-      }
-      this.emit(installId, app.id, 'provisioning', 62, 'Creating the website, PHP profile, HTTPS certificate, and database identity.')
-      site = await this.vhosts.create({
-        name: request.location === 'default' ? `default-${request.projectName}`.slice(0, 64).replace(/-+$/g, '') : request.projectName,
-        serverName: request.domain, aliases: [], documentRoot: siteDocumentRoot, applicationRoot: documentRoot, http: request.http, https: request.https,
-        forceHttps: request.forceHttps, setupRestricted: app.setup === 'browser',
-        updateHosts: request.location === 'side' && request.updateHosts && !usesAutomaticLocalhostResolution(request.domain), isolation
-      })
+      this.emit(installId, app.id, 'provisioning', 62, onMainSite
+        ? 'Attaching this app to the main website, PHP profile, HTTPS certificate, and database identity.'
+        : 'Creating the virtual host, PHP profile, HTTPS certificate, and database identity.')
+      site = onMainSite
+        ? await this.vhosts.bindMainSite({
+          documentRoot: siteDocumentRoot, applicationRoot: documentRoot, http: request.http, https: request.https,
+          forceHttps: request.forceHttps, setupRestricted: app.setup === 'browser', isolation
+        })
+        : await this.vhosts.create({
+          name: folderName,
+          serverName: request.domain, aliases: [], documentRoot: siteDocumentRoot, applicationRoot: documentRoot, http: request.http, https: request.https,
+          forceHttps: request.forceHttps, setupRestricted: app.setup === 'browser',
+          updateHosts: request.updateHosts && !usesAutomaticLocalhostResolution(request.domain), isolation
+        })
 
-      await this.clearDirectory(documentRoot, settings.htdocsRoot, request.location === 'default' ? PRESERVED_DEFAULT_ENTRIES : undefined)
+      if (onMainSite) {
+        if (request.clearMainSite) await this.clearDirectory(documentRoot, settings.htdocsRoot)
+        else await removeManagedWelcomeFiles(documentRoot)
+      } else await this.clearDirectory(documentRoot, settings.htdocsRoot)
       await cp(payload, documentRoot, { recursive: true })
       copied = true
       if (app.nestedArchive) await this.extractNestedArchive(app, documentRoot, join(tempRoot, 'nested'))
@@ -361,12 +498,14 @@ export class PreinstalledAppManager {
       }
       if (documentRoot && (copied || site || backupPath)) {
         const settings = await this.store.getSettings()
-        if (copied || backupPath) await this.clearDirectory(documentRoot, settings.htdocsRoot, requestLocation(raw) === 'default' ? PRESERVED_DEFAULT_ENTRIES : undefined).catch(() => undefined)
+        const preserveMainSite = resolve(documentRoot) === resolve(mainSitePath(settings.htdocsRoot))
+        if (copied || backupPath) await this.clearDirectory(documentRoot, settings.htdocsRoot).catch(() => undefined)
         if (backupPath) {
           await this.restoreBackup(backupPath, documentRoot).catch(() => undefined)
           await rm(backupPath, { recursive: true, force: true }).catch(() => undefined)
-        }
-        else if (requestLocation(raw) === 'side') await rm(documentRoot, { recursive: true, force: true }).catch(() => undefined)
+        } else if (preserveMainSite) {
+          await ensureWelcomeSite(documentRoot, settings).catch(() => undefined)
+        } else await rm(documentRoot, { recursive: true, force: true }).catch(() => undefined)
         await rm(join(settings.runtimeRoot, 'app-records', `${installId}.json`), { force: true }).catch(() => undefined)
       }
       await this.store.deleteAppAdminPassword(installId).catch(() => undefined)
@@ -404,9 +543,17 @@ export class PreinstalledAppManager {
         await this.audit(record.id, record.catalogId, 'uninstall', 'info', `Removed database ${record.databaseName}.`)
       }
       if (options?.removeFiles !== false) {
-        await this.clearDirectory(record.documentRoot, settings.htdocsRoot, record.location === 'default' ? PRESERVED_DEFAULT_ENTRIES : undefined)
-        if (record.location === 'default' && record.backupPath) await this.restoreBackup(record.backupPath, record.documentRoot)
-        else if (record.location === 'side') await rm(record.documentRoot, { recursive: true, force: true })
+        const atHtdocsRoot = resolve(record.documentRoot) === resolve(settings.htdocsRoot)
+        const onMainSite = occupiesMainSite(record, settings.htdocsRoot)
+        if (onMainSite) {
+          const mainSite = mainSitePath(settings.htdocsRoot)
+          await this.clearDirectory(mainSite, settings.htdocsRoot)
+          await ensureWelcomeSite(mainSite, settings)
+        } else if (atHtdocsRoot) await this.clearDirectory(record.documentRoot, settings.htdocsRoot, PRESERVED_DEFAULT_ENTRIES)
+        else {
+          await this.clearDirectory(record.documentRoot, settings.htdocsRoot)
+          await rm(record.documentRoot, { recursive: true, force: true })
+        }
       }
       await rm(join(settings.runtimeRoot, 'app-records', `${record.id}.json`), { force: true })
       if (record.backupPath) await rm(record.backupPath, { recursive: true, force: true })
@@ -423,8 +570,12 @@ export class PreinstalledAppManager {
     const all = await this.store.getInstalledApps()
     const record = findInstalledApp(all, id)
     if (!record) throw new Error('Installed app not found.')
-    const site = await this.vhosts.updateAccess(record.siteId, access)
+    const patch = record.siteId === MAIN_SITE_VHOST_ID || record.location === 'default'
+      ? { ...access, serverName: undefined, updateHosts: false }
+      : access
+    const site = await this.vhosts.updateAccess(record.siteId, patch)
     const settings = await this.store.getSettings()
+    record.domain = site.serverName
     const url = `${siteUrl({ domain: record.domain, https: site.https } as PreinstalledAppInstallRequest, settings)}/`
     if (record.setupUrl) {
       try {
@@ -436,14 +587,18 @@ export class PreinstalledAppManager {
     record.forceHttps = site.forceHttps === true
     record.updatedAt = new Date().toISOString()
     await this.store.setInstalledApps(all)
-    await this.audit(record.id, record.catalogId, 'configuring', 'info', `Updated HTTP/HTTPS access for ${record.domain}.`)
+    await this.audit(record.id, record.catalogId, 'configuring', 'info', `Updated virtual-host access for ${record.domain}.`)
     return record
   }
 
   private async validateRequest(raw: PreinstalledAppInstallRequest, app: InternalPreinstalledApp): Promise<PreinstalledAppInstallRequest> {
-    if (!raw || typeof raw !== 'object' || !['default', 'side'].includes(raw.location)) throw new Error('Choose the default website or a side website.')
+    if (!raw || typeof raw !== 'object') throw new Error('Choose an application and a virtual-host name.')
     const projectName = cleanProjectName(String(raw.projectName ?? app.id))
-    const domain = raw.location === 'default' ? 'localhost' : String(raw.domain ?? '').trim().toLowerCase()
+    const location = raw.location === 'default' ? 'default' : 'side'
+    let domain = String(raw.domain ?? '').trim().toLowerCase()
+    if (location === 'default') domain = 'localhost'
+    else if (!domain || isMainSiteHostname(domain)) domain = defaultAppDomain(projectName, app.id)
+    if (location !== 'default' && isMainSiteHostname(domain)) throw new Error('localhost is reserved for the main website in htdocs\\main-site. Use a virtual-host name such as wordpress.localhost or wordpress.example.com, or choose Main website.')
     if (!validHostname(domain)) throw new Error('Enter a valid domain without a protocol or path.')
     if (!raw.http && !raw.https) throw new Error('Enable HTTP, HTTPS, or both.')
     if (raw.forceHttps && (!raw.http || !raw.https)) throw new Error('HTTPS redirection requires both HTTP and HTTPS to be enabled.')
@@ -474,7 +629,8 @@ export class PreinstalledAppManager {
       }
     }
     return {
-      ...raw, projectName, domain, updateHosts: raw.updateHosts === true && !usesAutomaticLocalhostResolution(domain), phpExtensions, databaseName, databaseUsername, phpProfile,
+      ...raw, location, projectName, domain, clearMainSite: location === 'default' && raw.clearMainSite === true,
+      updateHosts: location !== 'default' && raw.updateHosts === true && !usesAutomaticLocalhostResolution(domain), phpExtensions, databaseName, databaseUsername, phpProfile,
       forceHttps: raw.forceHttps === true, disableDangerousFunctions: raw.disableDangerousFunctions !== false,
       allowUserIni: raw.allowUserIni === true
     }
@@ -589,13 +745,27 @@ export class PreinstalledAppManager {
     return isRecoverableVhostPlaceholder(entries, content, domain)
   }
 
-  private async availableProjectName(htdocsRoot: string, requested: string): Promise<string> {
-    const base = cleanProjectName(requested).slice(0, 60).replace(/-+$/g, '') || 'website'
+  private async allocateAppFolder(htdocsRoot: string, projectName: string, fallback: string): Promise<string> {
+    const entries = await readdir(htdocsRoot).catch(() => [])
+    const hosts = await this.vhosts.list()
+    return nextDatedAppFolder(datedAppFolder(projectName || fallback, new Date(), fallback), [...entries, ...RESERVED_HTDOCS_NAMES, ...hosts.map((item) => item.name)])
+  }
+
+  private async availableDomain(slug: string, apps: PreinstalledAppRecord[], hosts: VirtualHost[]): Promise<string> {
+    const used = new Set([
+      'localhost',
+      '127.0.0.1',
+      ...apps.map((item) => item.domain.toLowerCase()),
+      ...hosts.flatMap((item) => [item.serverName, ...item.aliases].map((host) => host.toLowerCase()))
+    ])
+    const base = defaultAppDomain(slug)
+    if (!used.has(base)) return base
+    const prefix = appFolderSlug(slug)
     for (let suffix = 2; suffix < 10_000; suffix += 1) {
-      const candidate = `${base}-${suffix}`
-      if ((await this.directoryEntries(resolve(htdocsRoot, candidate))).length === 0) return candidate
+      const candidate = `${prefix}-${suffix}.localhost`
+      if (!used.has(candidate)) return candidate
     }
-    throw new Error('Could not find an available project folder name. Choose a unique name manually.')
+    throw new Error('Could not find an available virtual-host name.')
   }
 
   private async clearDirectory(folder: string, htdocsRoot: string, preserve?: ReadonlySet<string>): Promise<void> {
@@ -675,10 +845,4 @@ export class PreinstalledAppManager {
     await this.store.addPreinstalledAppActivity({ id: crypto.randomUUID(), installId, catalogId, timestamp: new Date().toISOString(), level, phase, message })
     this.logs.add('system', level, `[Apps] ${message}`)
   }
-}
-
-function requestLocation(request: unknown): 'default' | 'side' | undefined {
-  if (request && typeof request === 'object' && (request as { location?: unknown }).location === 'default') return 'default'
-  if (request && typeof request === 'object' && (request as { location?: unknown }).location === 'side') return 'side'
-  return undefined
 }

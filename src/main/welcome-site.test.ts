@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { ensureWelcomeSite, isWeebxHomePage } from './welcome-site'
+import { ensureWelcomeSite, isWeebxHomePage, migrateWelcomeFromHtdocsRoot } from './welcome-site'
 
 describe('welcome site', () => {
   it('recognizes the old first-run stub as a managed WeebX homepage', () => {
@@ -32,6 +32,15 @@ describe('welcome site', () => {
     expect(runtime.passwordSet).toBe(true)
     expect(runtime.phpProfile).toBe('production')
     expect(await readFile(join(custom, 'index.php'), 'utf8')).toBe('<?php echo "my project";')
+    await expect(readFile(join(custom, 'phpinfo.php'), 'utf8')).rejects.toThrow()
+  })
+
+  it('does not inject the welcome page into a public/ web-root application', async () => {
+    const folder = join(tmpdir(), `weebx-home-public-${Date.now()}`)
+    await mkdir(join(folder, 'public'), { recursive: true })
+    await writeFile(join(folder, 'public', 'index.php'), '<?php echo "gitlist";', 'utf8')
+    await ensureWelcomeSite(folder, { apachePort: 80, apacheSslPort: 443, mariadbPort: 3306, mariadbPassword: 'Strong!Password123', activePhpVersion: '8.5.12', phpProfile: 'production', setupComplete: true })
+    await expect(readFile(join(folder, 'index.php'), 'utf8')).rejects.toThrow()
   })
 
   it('starts even when the homepage logo is already present', async () => {
@@ -40,5 +49,18 @@ describe('welcome site', () => {
     await writeFile(join(folder, 'assets', 'weebx-logo.png'), 'existing-logo')
     await writeFile(join(folder, 'index.php'), '<?php echo "my project";', 'utf8')
     await expect(ensureWelcomeSite(folder, { apachePort: 80, apacheSslPort: 443, mariadbPort: 3306, mariadbPassword: 'Strong!Password123', activePhpVersion: '8.5.12', phpProfile: 'production', setupComplete: true })).resolves.toBeUndefined()
+  })
+
+  it('removes leftover WeebX welcome files from the htdocs root', async () => {
+    const folder = join(tmpdir(), `weebx-home-migrate-${Date.now()}`)
+    await mkdir(join(folder, 'assets'), { recursive: true })
+    await writeFile(join(folder, 'index.php'), '<?php\n// WEEBX_HOME_PAGE\n', 'utf8')
+    await writeFile(join(folder, 'phpinfo.php'), '<?php\n// WEEBX_PHPINFO_PAGE\n', 'utf8')
+    await writeFile(join(folder, 'assets', 'weebx.css'), '/* WEEBX_HOME_PAGE */\n', 'utf8')
+    await writeFile(join(folder, 'keep.php'), '<?php echo "site";', 'utf8')
+    await migrateWelcomeFromHtdocsRoot(folder)
+    await expect(readFile(join(folder, 'index.php'), 'utf8')).rejects.toThrow()
+    await expect(readFile(join(folder, 'phpinfo.php'), 'utf8')).rejects.toThrow()
+    expect(await readFile(join(folder, 'keep.php'), 'utf8')).toBe('<?php echo "site";')
   })
 })

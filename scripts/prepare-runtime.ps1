@@ -82,8 +82,16 @@ Expand-Package ($packages | Where-Object Name -eq 'phpmyadmin') (Join-Path $runt
 
 $siteSource = Join-Path $repo 'resources\site'
 $htdocs = Join-Path $runtime 'htdocs'
-Copy-Item -Path (Join-Path $siteSource '*') -Destination $htdocs -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $repo 'build\assets\weebx-logo.png') -Destination (Join-Path $htdocs 'assets\weebx-logo.png') -Force
+$mainSite = Join-Path $htdocs 'main-site'
+New-Item -ItemType Directory -Path (Join-Path $mainSite 'assets') -Force | Out-Null
+Copy-Item -Path (Join-Path $siteSource '*') -Destination $mainSite -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $repo 'build\assets\weebx-logo.png') -Destination (Join-Path $mainSite 'assets\weebx-logo.png') -Force
+Get-ChildItem -LiteralPath $htdocs -File -Force | Where-Object { $_.Name -in @('index.php','phpinfo.php') } | Remove-Item -Force
+$rootAssets = Join-Path $htdocs 'assets'
+if (Test-Path -LiteralPath $rootAssets) {
+    Get-ChildItem -LiteralPath $rootAssets -File -Force | Where-Object { $_.Name -like 'weebx*' } | Remove-Item -Force
+    if (-not (Get-ChildItem -LiteralPath $rootAssets -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $rootAssets -Force }
+}
 
 $manifest = [ordered]@{
     version = '2026.10.28.1'

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AUTOMATIC_INSTALLER_IDS } from './app-installers'
-import { catalogConnectionLinks, catalogDownloadUrls, PREINSTALLED_APP_CATALOG, publicPreinstalledAppCatalog } from './preinstalled-app-catalog'
-import { APP_DOWNLOAD_HOSTS, findInstalledApp, isRecoverableVhostPlaceholder, isRetryableDownloadFailure, normalizeAppKey, phpVersionCompatible, unexpectedDefaultEntries, usesAutomaticLocalhostResolution } from './preinstalled-apps'
+import { catalogConnectionLinks, catalogDownloadUrls, catalogRuntimePolicy, PREINSTALLED_APP_CATALOG, publicPreinstalledAppCatalog } from './preinstalled-app-catalog'
+import { APP_DOWNLOAD_HOSTS, findInstalledApp, isRecoverableVhostPlaceholder, isRetryableDownloadFailure, normalizeAppKey, phpVersionCompatible, unexpectedDefaultEntries, unexpectedMainSiteEntries, usesAutomaticLocalhostResolution } from './preinstalled-apps'
 import { vhostPlaceholderHtml } from './vhost-manager'
 import type { PreinstalledAppRecord } from '../shared/types'
 
@@ -54,6 +54,12 @@ describe('pre-installed app catalog', () => {
     const publicCatalog = publicPreinstalledAppCatalog()
     expect(publicCatalog.find((item) => item.id === 'gitlist')?.account).toBe(false)
     expect(publicCatalog.find((item) => item.id === 'privatebin')?.account).toBe(false)
+    expect(catalogRuntimePolicy('gitlist')).toEqual({
+      openBasedir: false,
+      disableDangerousFunctions: false,
+      customIni: 'error_reporting=E_ALL & ~E_DEPRECATED'
+    })
+    expect(catalogRuntimePolicy('wordpress').disableDangerousFunctions).toBe(true)
   })
 
   it('pins phpBB to a checksum-matched community mirror when the official CDN is blocked', () => {
@@ -86,8 +92,13 @@ describe('pre-installed app catalog', () => {
   })
 
   it('preserves WeebX infrastructure when checking the default website', () => {
-    expect(unexpectedDefaultEntries(['index.php', 'assets', 'phpinfo.php', 'phpmyadmin'])).toEqual([])
+    expect(unexpectedDefaultEntries(['index.php', 'assets', 'phpinfo.php', 'phpmyadmin', 'main-site'])).toEqual([])
     expect(unexpectedDefaultEntries(['PHPMYADMIN', 'notes.txt', 'customer-site'])).toEqual(['notes.txt', 'customer-site'])
+  })
+
+  it('treats WeebX welcome files as expected in the main site folder', () => {
+    expect(unexpectedMainSiteEntries(['index.php', 'assets', 'phpinfo.php'])).toEqual([])
+    expect(unexpectedMainSiteEntries(['index.php', 'wp-config.php', 'wp-admin'])).toEqual(['wp-config.php', 'wp-admin'])
   })
 
   it('only recovers the exact placeholder left by the older virtual-host failure', () => {

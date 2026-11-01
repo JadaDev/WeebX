@@ -207,6 +207,10 @@ async function createWindow(): Promise<void> {
 
     sendPreparation({ phase: 'configuring', percent: 96, message: 'Writing configuration files', detail: 'Updating Apache, MariaDB, PHP, and virtual-host paths...', etaSeconds: null })
     await configs.ensureLayout()
+    try { await preinstalledApps.migrateLayout() }
+    catch (error) {
+      logs.add('system', 'warn', `Catalog site layout migration could not finish: ${error instanceof Error ? error.message : String(error)}`)
+    }
     if (seeded) {
       const settings = await store.getSettings()
       await configs.save('apache', configs.apacheTemplate(settings))

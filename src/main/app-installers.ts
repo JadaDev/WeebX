@@ -525,14 +525,81 @@ async function configureGitList(ctx: AppInstallContext): Promise<void> {
   yaml = yaml.replace(/^(\s*)ssh_clone_url:\s*.+$/m, `$1ssh_clone_url: ${yamlQuote(`git@${ctx.request.domain}:%s.git`)}`)
   yaml = yaml.replace(/^(\s*)https_clone_url:\s*.+$/m, `$1https_clone_url: ${yamlQuote(`${ctx.siteUrl.replace(/\/$/, '')}/%s.git`)}`)
   await writeFile(configPath, yaml, 'utf8')
-  await writeFile(join(ctx.documentRoot, '.env'), [
-    'APP_ENV=prod',
-    `APP_SECRET=${randomBytes(32).toString('hex')}`,
-    `DEFAULT_REPOSITORY_DIR=${posixRepos}`
-  ].join('\n') + '\n', { encoding: 'utf8', mode: 0o600 })
+  await repairGitListFiles(ctx.documentRoot, ctx.siteDocumentRoot)
   const htaccess = join(ctx.siteDocumentRoot, '.htaccess')
   if (!(await exists(htaccess))) {
     await writeFile(htaccess, 'DirectoryIndex index.php\nRewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^ index.php [QSA,L]\n', 'utf8')
   }
   await seedGitRepository(repos, gitPath)
+}
+
+const GITLIST_DOTENV_LOADER = `function weebxLoadDotenv(string $path): void
+{
+    if (!is_readable($path)) {
+        return;
+    }
+    if (class_exists(\\Symfony\\Component\\Dotenv\\Dotenv::class, true)) {
+        (new \\Symfony\\Component\\Dotenv\\Dotenv())->load($path);
+        return;
+    }
+    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+        $eq = strpos($line, '=');
+        if ($eq === false) {
+            continue;
+        }
+        $name = trim(substr($line, 0, $eq));
+        $value = trim(substr($line, $eq + 1));
+        if ($name === '') {
+            continue;
+        }
+        $_ENV[$name] = $value;
+        $_SERVER[$name] = $value;
+        putenv($name . '=' . $value);
+    }
+}
+`
+
+export function patchGitListFrontController(source: string): string {
+  if (source.includes('function weebxLoadDotenv')) return source
+  const next = source.replace(
+    /\$env = __DIR__ \. '\/\.\.\/\.env';\s*if \(is_readable\(\$env\)\) \{\s*\(new Dotenv\(\)\)->load\(\$env\);\s*\}/s,
+    `${GITLIST_DOTENV_LOADER}\n$env = __DIR__ . '/../.env';\nweebxLoadDotenv($env);`
+  )
+  if (next === source) throw new Error('GitList front controller no longer matches the expected Symfony bootstrap, so WeebX cannot patch the missing Dotenv class.')
+  return next
+}
+
+export function gitListEnvFile(existing: string, repos: string, fallbackSecret: string): string {
+  const values = new Map<string, string>()
+  for (const line of existing.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) continue
+    values.set(trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1).trim())
+  }
+  const secret = values.get('APP_SECRET')?.trim() || fallbackSecret
+  return [
+    'APP_ENV=prod',
+    'APP_DEBUG=0',
+    `APP_SECRET=${secret}`,
+    `DEFAULT_REPOSITORY_DIR=${repos}`
+  ].join('\n') + '\n'
+}
+
+export async function repairGitListFiles(documentRoot: string, siteDocumentRoot: string): Promise<void> {
+  const indexPath = join(siteDocumentRoot, 'index.php')
+  await requireFile(indexPath, 'GitList front controller')
+  await writeFile(indexPath, patchGitListFrontController(await readFile(indexPath, 'utf8')), 'utf8')
+  await mkdir(join(documentRoot, 'var', 'cache'), { recursive: true })
+  await mkdir(join(documentRoot, 'var', 'log'), { recursive: true })
+  await mkdir(join(documentRoot, 'repositories'), { recursive: true })
+  const repos = join(documentRoot, 'repositories').replace(/\\/g, '/')
+  const envPath = join(documentRoot, '.env')
+  const existing = await readFile(envPath, 'utf8').catch(() => '')
+  await writeFile(envPath, gitListEnvFile(existing, repos, randomBytes(32).toString('hex')), { encoding: 'utf8', mode: 0o600 })
 }

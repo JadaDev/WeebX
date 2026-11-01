@@ -28,6 +28,8 @@ describe('runtime OpenSSL paths', () => {
     expect(paths.opensslExe).toBe(join('C:\\WeebX', 'apache', 'bin', 'openssl.exe'))
     expect(paths.opensslConf).toBe(join('C:\\WeebX', 'apache', 'conf', 'openssl.cnf'))
     expect(paths.opensslConf).not.toContain('Apache24')
+    expect(paths.mainSite).toBe(join('C:\\WeebX', 'htdocs', 'main-site'))
+    expect(paths.phpMyAdmin).toBe(join('C:\\WeebX', 'htdocs', 'phpmyadmin'))
   })
 
   it('overrides a compiled-in or inherited OPENSSL_CONF path', () => {

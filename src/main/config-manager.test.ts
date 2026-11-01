@@ -69,14 +69,16 @@ describe('ConfigManager templates', () => {
     expect(config).toContain('SSLCompression Off')
     expect(config).toContain('Require local')
     expect(config).toContain('<Directory />')
-    expect(config).toContain('DocumentRoot "C:/WeebX Runtime/htdocs"')
-    expect(config).toContain('<Directory "C:/WeebX Runtime/htdocs">\n    Options -Indexes +FollowSymLinks\n    AllowOverride All\n    Require all granted')
+    expect(config).toContain('DocumentRoot "C:/WeebX Runtime/htdocs/main-site"')
+    expect(config).toContain('<Directory "C:/WeebX Runtime/htdocs/main-site">\n    Options -Indexes +FollowSymLinks\n    AllowOverride All\n    Require all granted')
+    expect(config).toContain('Alias /phpmyadmin "C:/WeebX Runtime/htdocs/phpmyadmin"')
   })
 
   it('keeps the document root reachable when refreshing security defaults', () => {
-    const block = apacheSecurityBlock('C:\\WeebX\\htdocs')
-    expect(block).toContain('DocumentRoot "C:/WeebX/htdocs"')
-    expect(block).toContain('<Directory "C:/WeebX/htdocs">\n    Options -Indexes +FollowSymLinks\n    AllowOverride All\n    Require all granted')
+    const block = apacheSecurityBlock('C:\\WeebX\\htdocs\\main-site', 'C:\\WeebX\\htdocs\\phpmyadmin')
+    expect(block).toContain('DocumentRoot "C:/WeebX/htdocs/main-site"')
+    expect(block).toContain('<Directory "C:/WeebX/htdocs/main-site">\n    Options -Indexes +FollowSymLinks\n    AllowOverride All\n    Require all granted')
+    expect(block).toContain('Alias /phpmyadmin "C:/WeebX/htdocs/phpmyadmin"')
   })
 
   it('emits security directives accepted by the bundled Apache build', async () => {

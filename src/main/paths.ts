@@ -1,5 +1,10 @@
 import { join } from 'node:path'
 import type { RuntimeSettings } from '../shared/types'
+import { MAIN_SITE_FOLDER, PHPMYADMIN_FOLDER } from '../shared/site-layout'
+
+export function mainSitePath(htdocsRoot: string): string {
+  return join(htdocsRoot, MAIN_SITE_FOLDER)
+}
 
 export function opensslProcessEnv(opensslConf: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return { ...env, OPENSSL_CONF: opensslConf }
@@ -25,7 +30,8 @@ export function runtimePaths(settings: RuntimeSettings) {
     phpCgiExe: join(root, 'php', settings.activePhpVersion, 'php-cgi.exe'),
     phpIni: join(root, 'php', settings.activePhpVersion, 'php.ini'),
     htdocs: settings.htdocsRoot,
-    phpMyAdmin: join(settings.htdocsRoot, 'phpmyadmin'),
+    mainSite: join(settings.htdocsRoot, MAIN_SITE_FOLDER),
+    phpMyAdmin: join(settings.htdocsRoot, PHPMYADMIN_FOLDER),
     certificates: join(root, 'certificates'),
     temp: join(root, '.downloads'),
     tmp: join(root, 'tmp'),

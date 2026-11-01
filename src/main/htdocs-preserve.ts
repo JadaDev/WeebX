@@ -7,7 +7,7 @@ export function htdocsKeepDestination(documentsDir = join(homedir(), 'Documents'
 }
 
 export function shouldCopyHtdocsEntry(name: string): boolean {
-  return name.toLowerCase() !== 'phpmyadmin'
+  return !['phpmyadmin', 'main-site'].includes(name.toLowerCase())
 }
 
 export async function preserveHtdocs(htdocsRoot: string, destination = htdocsKeepDestination()): Promise<string> {

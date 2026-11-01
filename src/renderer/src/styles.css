@@ -318,4 +318,21 @@ button.brand:hover:not(:disabled){background:#ffffff0a;border-color:transparent}
 .app-developer .app-monogram,.app-monogram.app-developer{border-color:#6a8a3d57;background:linear-gradient(145deg,#2a3518,#1c2412);color:#c4e07a}
 .wizard-fields{gap:16px 18px}
 .location-choice button>small{max-width:100%}
+.location-choice{margin-bottom:16px}
+.main-site-clear{margin-top:14px;padding:11px 13px;border:1px solid #29344a;border-radius:9px;background:#0e1523}
+.main-site-clear.warn{border-color:#574426;background:#211b13}
+.main-site-clear .toggle{margin:0!important}
+.main-site-clear small{display:block;margin-top:8px;color:#748198;font-size:8px;line-height:1.5}
+.main-site-clear.warn small{color:#d2aa62}
+.layout-note{margin:0 0 16px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;border:1px solid #2b4d42;border-radius:10px;background:#10231e;color:#76d4ae}
+.layout-note>svg{flex:0 0 auto;margin-top:1px}
+.layout-note b{display:block;margin-bottom:4px;color:#c8eadc;font-size:11px}
+.layout-note small{display:block;color:#8da69c;font-size:9px;line-height:1.5}
+.layout-note code{color:#b3d5c8}
+.folder-preview{margin-top:14px;padding:11px 13px;border:1px solid #29344a;border-radius:9px;background:#0e1523}
+.folder-preview span{display:block;margin-bottom:4px;color:#627087;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.folder-preview b{display:block;color:#c4cddd;font:10px Consolas,monospace}
+.folder-preview small{display:block;margin-top:6px;color:#748198;font-size:8px;line-height:1.5}
+.site-access-card label{display:flex;flex-direction:column;gap:6px;color:#9ba6ba;font-size:9px;font-weight:650}
+.site-access-card input{height:38px;padding:0 10px;border:1px solid #29354b;border-radius:7px;background:#0a101c;color:#e6eaf3;outline:0}
 .wizard-certificate-note code{color:inherit}

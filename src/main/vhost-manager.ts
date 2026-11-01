@@ -7,7 +7,8 @@ import { windowsHostsPath } from './windows-hosts'
 import type { JsonStore } from './store'
 import type { ConfigManager } from './config-manager'
 import type { LogBuffer } from './logs'
-import { opensslProcessEnv, runtimePaths } from './paths'
+import { opensslProcessEnv, runtimePaths, mainSitePath } from './paths'
+import { MAIN_SITE_FOLDER, MAIN_SITE_VHOST_ID, PHPMYADMIN_FOLDER, isMainSiteHostname } from '../shared/site-layout'
 import { dropSiteDatabaseUser, normalizeSiteIsolation, provisionSiteDatabase, siteProfilePaths, writeSitePhpIni } from './site-profile'
 
 const execFileAsync = promisify(execFile)
@@ -16,6 +17,26 @@ const END = '# END WEEBX MANAGED VHOSTS'
 
 export function vhostPlaceholderHtml(serverName: string): string {
   return `<?php declare(strict_types=1); ?><h1>${serverName}</h1><p>Served by WeebX · PHP <?= PHP_VERSION ?></p>`
+}
+
+/** Keep instructional comments first, but never let leftover user VirtualHost blocks steal Apache's default site. */
+export function partitionVhostFile(current: string): { preamble: string; leftoverHosts: string } {
+  const start = current.indexOf(BEGIN)
+  const finish = current.indexOf(END)
+  const userContent = start >= 0 && finish > start
+    ? `${current.slice(0, start).trimEnd()}\n${current.slice(finish + END.length).trimStart()}`.trim()
+    : current.trim()
+  if (!userContent) return { preamble: '', leftoverHosts: '' }
+  const match = userContent.match(/^<VirtualHost\b/im)
+  if (!match || match.index === undefined) return { preamble: userContent, leftoverHosts: '' }
+  return {
+    preamble: userContent.slice(0, match.index).trimEnd(),
+    leftoverHosts: userContent.slice(match.index).trim()
+  }
+}
+
+export function composeVhostFile(preamble: string, managed: string, leftoverHosts = ''): string {
+  return [preamble.trim(), `${BEGIN}\n${managed}\n${END}`, leftoverHosts.trim()].filter(Boolean).join('\n\n') + '\n'
 }
 
 function automaticLocalhost(domain: string): boolean {
@@ -30,7 +51,7 @@ function validHostname(value: string): boolean {
 function cleanName(value: string): string {
   const clean = value.toLowerCase().trim().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
   if (!clean) throw new Error('Project name must contain letters or numbers.')
-  if (clean.length > 64) throw new Error('Project name must be 64 characters or fewer.')
+  if (clean.length > 80) throw new Error('Project name must be 80 characters or fewer.')
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) throw new Error('Choose a different project name; that name is reserved by Windows.')
   return clean
 }
@@ -86,6 +107,10 @@ export class VhostManager {
     const serverName = draft.serverName.trim().toLowerCase()
     const aliases = [...new Set(draft.aliases.map((item) => item.trim().toLowerCase()).filter(Boolean))]
     if (!validHostname(serverName) || aliases.some((item) => !validHostname(item))) throw new Error('Enter valid hostnames without a protocol or path.')
+    if (isMainSiteHostname(serverName) || aliases.some((item) => isMainSiteHostname(item))) {
+      throw new Error('localhost is reserved for the main website in htdocs\\main-site. Give this site its own hostname, for example wordpress.localhost or wordpress.example.com.')
+    }
+    if (name === MAIN_SITE_FOLDER || name === PHPMYADMIN_FOLDER) throw new Error('That folder name is reserved for the main website or phpMyAdmin.')
     if (!draft.http && !draft.https) throw new Error('Enable HTTP, HTTPS, or both.')
     const existing = await this.store.getVhosts()
     if (existing.some((item) => item.name === name)) throw new Error('That project name is already used by another site.')
@@ -95,6 +120,9 @@ export class VhostManager {
     const documentRelative = relative(resolve(settings.htdocsRoot), documentRoot)
     if (documentRelative.startsWith('..') || isAbsolute(documentRelative)) {
       throw new Error('Virtual-host document roots must stay inside the configured htdocs folder.')
+    }
+    if (resolve(documentRoot) === resolve(mainSitePath(settings.htdocsRoot))) {
+      throw new Error('The main website folder htdocs\\main-site is reserved. Choose another document root.')
     }
     const applicationRoot = draft.applicationRoot ? resolve(draft.applicationRoot) : undefined
     if (applicationRoot) {
@@ -151,6 +179,68 @@ export class VhostManager {
     return vhost
   }
 
+  async bindMainSite(draft: Pick<VhostDraft, 'documentRoot' | 'applicationRoot' | 'http' | 'https' | 'forceHttps' | 'setupRestricted' | 'isolation'>): Promise<VirtualHost> {
+    const settings = await this.store.getSettings()
+    if (!draft.http && !draft.https) throw new Error('Enable HTTP, HTTPS, or both.')
+    const existing = await this.store.getVhosts()
+    if (existing.some((item) => item.id === MAIN_SITE_VHOST_ID)) {
+      throw new Error('The main website already has a catalog application. Uninstall it first, or install this app on a dedicated virtual host.')
+    }
+    const main = resolve(mainSitePath(settings.htdocsRoot))
+    const documentRoot = resolve(draft.documentRoot || main)
+    const applicationRoot = resolve(draft.applicationRoot || main)
+    const htdocs = resolve(settings.htdocsRoot)
+    const documentRelative = relative(htdocs, documentRoot)
+    const applicationRelative = relative(htdocs, applicationRoot)
+    const publicRelative = relative(applicationRoot, documentRoot)
+    const mainRelative = relative(main, applicationRoot)
+    if (documentRelative.startsWith('..') || isAbsolute(documentRelative) || applicationRelative.startsWith('..') || isAbsolute(applicationRelative) || publicRelative.startsWith('..') || isAbsolute(publicRelative) || mainRelative.startsWith('..') || isAbsolute(mainRelative)) {
+      throw new Error('The main website application must stay inside htdocs\\main-site.')
+    }
+    const normalized = draft.isolation ? await normalizeSiteIsolation(settings, draft.isolation) : undefined
+    if (normalized?.profile.database && existing.some((item) => item.isolation?.database && (item.isolation.database.username === normalized.profile.database!.username || item.isolation.database.databaseName === normalized.profile.database!.databaseName))) {
+      throw new Error('Each isolated site must use a unique database name and database username.')
+    }
+    const vhost: VirtualHost = {
+      id: MAIN_SITE_VHOST_ID,
+      name: MAIN_SITE_FOLDER,
+      serverName: 'localhost',
+      aliases: ['127.0.0.1'],
+      documentRoot,
+      applicationRoot,
+      http: draft.http,
+      https: draft.https,
+      forceHttps: draft.forceHttps === true && draft.http && draft.https,
+      setupRestricted: draft.setupRestricted === true,
+      enabled: true,
+      createdAt: new Date().toISOString()
+    }
+    if (normalized) vhost.isolation = normalized.profile
+    let databaseProvisioned = false
+    try {
+      await mkdir(documentRoot, { recursive: true })
+      if (vhost.https) await this.ensureCertificate(vhost)
+      if (vhost.isolation) {
+        await writeSitePhpIni(settings, vhost)
+        if (vhost.isolation.database && normalized?.databasePassword) {
+          await provisionSiteDatabase(settings, vhost.isolation, normalized.databasePassword, false)
+          databaseProvisioned = true
+          await this.store.setSiteDatabasePassword(MAIN_SITE_VHOST_ID, normalized.databasePassword)
+        }
+      }
+      await this.store.setVhosts([...existing, vhost])
+      await this.render()
+    } catch (error) {
+      if (databaseProvisioned && vhost.isolation?.database) await dropSiteDatabaseUser(settings, vhost.isolation).catch(() => undefined)
+      await this.store.deleteSiteDatabasePassword(MAIN_SITE_VHOST_ID).catch(() => undefined)
+      await this.store.setVhosts(existing).catch(() => undefined)
+      await rm(join(settings.runtimeRoot, 'site-profiles', MAIN_SITE_FOLDER), { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
+    this.logs.add('system', 'info', 'Bound a catalog application to the main website.')
+    return vhost
+  }
+
   async remove(id: string): Promise<void> {
     const all = await this.store.getVhosts()
     const target = all.find((item) => item.id === id)
@@ -162,8 +252,10 @@ export class VhostManager {
     await this.store.deleteSiteDatabasePassword(id)
     await this.render()
     await rm(join(settings.runtimeRoot, 'site-profiles', target.name), { recursive: true, force: true })
-    await rm(join(settings.runtimeRoot, 'certificates', target.name), { recursive: true, force: true })
-    this.logs.add('system', 'info', `Removed virtual host ${target.serverName}; its document root was preserved.`)
+    if (target.id !== MAIN_SITE_VHOST_ID) await rm(join(settings.runtimeRoot, 'certificates', target.name), { recursive: true, force: true })
+    this.logs.add('system', 'info', target.id === MAIN_SITE_VHOST_ID
+      ? 'Restored the main website virtual host; application files were preserved.'
+      : `Removed virtual host ${target.serverName}; its document root was preserved.`)
   }
 
   async setSetupRestricted(id: string, restricted: boolean): Promise<VirtualHost> {
@@ -231,11 +323,27 @@ export class VhostManager {
     const all = await this.store.getVhosts()
     const target = all.find((item) => item.id === id)
     if (!target) throw new Error('Virtual host not found.')
+    const previousName = target.serverName
+    if (draft.serverName !== undefined && target.id !== MAIN_SITE_VHOST_ID) {
+      const serverName = draft.serverName.trim().toLowerCase()
+      if (!validHostname(serverName) || isMainSiteHostname(serverName)) {
+        throw new Error('localhost is reserved for the main website. Use a virtual-host name such as wordpress.localhost or wordpress.example.com.')
+      }
+      if (all.some((item) => item.id !== id && (item.serverName === serverName || item.aliases.includes(serverName)))) {
+        throw new Error('That server name is already assigned to another site.')
+      }
+      target.serverName = serverName
+    }
     target.http = draft.http
     target.https = draft.https
     target.forceHttps = draft.forceHttps === true && draft.http && draft.https
-    if (target.https) await this.ensureCertificate(target)
+    const hostnameChanged = target.serverName !== previousName
+    if (target.https) await this.ensureCertificate(target, hostnameChanged)
     const autoDns = automaticLocalhost(target.serverName) && target.aliases.every((alias) => automaticLocalhost(alias))
+    if (hostnameChanged && target.managedHosts?.length) {
+      await this.removeHosts(target.id)
+      delete target.managedHosts
+    }
     if (!autoDns && draft.updateHosts === true) {
       const added = await this.addHosts(target.id, [target.serverName, ...target.aliases])
       target.managedHosts = [...new Set([...(target.managedHosts ?? []), ...added])]
@@ -265,24 +373,78 @@ export class VhostManager {
     const all = await this.store.getVhosts()
     const settings = await this.store.getSettings()
     const current = await this.configs.read('vhosts')
-    const start = current.indexOf(BEGIN)
-    const finish = current.indexOf(END)
-    const userContent = start >= 0 && finish > start
-      ? `${current.slice(0, start).trimEnd()}\n${current.slice(finish + END.length).trimStart()}`.trim()
-      : current.trim()
+    let stored = false
+    for (const item of all) {
+      if (item.id === MAIN_SITE_VHOST_ID) continue
+      const aliases = item.aliases.filter((alias) => !isMainSiteHostname(alias))
+      if (aliases.length !== item.aliases.length) {
+        item.aliases = aliases
+        stored = true
+      }
+    }
+    if (stored) await this.store.setVhosts(all)
+    const { preamble, leftoverHosts } = partitionVhostFile(current)
     for (const item of all.filter((site) => site.isolation)) await writeSitePhpIni(settings, item, false)
-    const blocks = all.filter((item) => item.enabled).map((item) => this.block(item, settings)).join('\n\n')
-    const next = `${userContent}${userContent ? '\n\n' : ''}${BEGIN}\n${blocks}\n${END}\n`
-    await this.configs.save('vhosts', next)
+    const main = await this.mainSiteHost(settings)
+    const sites = all.filter((item) => item.enabled && item.id !== MAIN_SITE_VHOST_ID && !isMainSiteHostname(item.serverName))
+    const blocks = [this.block(main, settings), ...sites.map((item) => this.block(item, settings))].join('\n\n')
+    await this.configs.save('vhosts', composeVhostFile(preamble, blocks, leftoverHosts))
+  }
+
+  private async mainSiteHost(settings: RuntimeSettings): Promise<VirtualHost> {
+    const documentRoot = mainSitePath(settings.htdocsRoot)
+    await mkdir(documentRoot, { recursive: true })
+    const stored = (await this.store.getVhosts()).find((item) => item.id === MAIN_SITE_VHOST_ID)
+    const vhost: VirtualHost = {
+      id: MAIN_SITE_VHOST_ID,
+      name: MAIN_SITE_FOLDER,
+      serverName: 'localhost',
+      aliases: ['127.0.0.1'],
+      documentRoot: stored?.documentRoot || documentRoot,
+      ...(stored?.applicationRoot ? { applicationRoot: stored.applicationRoot } : {}),
+      http: stored?.http ?? true,
+      https: stored?.https ?? true,
+      forceHttps: stored?.forceHttps === true,
+      setupRestricted: stored?.setupRestricted === true,
+      enabled: true,
+      createdAt: stored?.createdAt || '2026-01-01T00:00:00.000Z',
+      ...(stored?.isolation ? { isolation: stored.isolation } : {})
+    }
+    if (vhost.https) {
+      try { await this.ensureCertificate(vhost) }
+      catch { vhost.https = false }
+    }
+    return vhost
+  }
+
+  async relocate(id: string, patch: { serverName?: string; documentRoot?: string; applicationRoot?: string }): Promise<VirtualHost> {
+    const all = await this.store.getVhosts()
+    const target = all.find((item) => item.id === id)
+    if (!target) throw new Error('Virtual host not found.')
+    if (patch.serverName) {
+      const serverName = patch.serverName.trim().toLowerCase()
+      if (!validHostname(serverName) || isMainSiteHostname(serverName)) throw new Error('Choose a hostname other than localhost for this application.')
+      if (all.some((item) => item.id !== id && (item.serverName === serverName || item.aliases.includes(serverName)))) {
+        throw new Error('That server name is already assigned to another site.')
+      }
+      target.serverName = serverName
+    }
+    if (patch.documentRoot) target.documentRoot = resolve(patch.documentRoot)
+    if (patch.applicationRoot) target.applicationRoot = resolve(patch.applicationRoot)
+    else if (patch.applicationRoot === '') delete target.applicationRoot
+    assertStoredVhost(target, await this.store.getSettings())
+    await this.store.setVhosts(all)
+    return target
   }
 
   private block(vhost: VirtualHost, settings: RuntimeSettings): string {
     assertStoredVhost(vhost, settings)
     const lines: string[] = [`# ${vhost.name}`]
     const profile = vhost.isolation ? this.profileDirectives(vhost, settings) : []
+    const aliases = vhost.id === MAIN_SITE_VHOST_ID ? vhost.aliases : vhost.aliases.filter((alias) => !isMainSiteHostname(alias))
     const common = [
       `    ServerName ${vhost.serverName}`,
-      ...(vhost.aliases.length ? [`    ServerAlias ${vhost.aliases.join(' ')}`] : []),
+      ...(aliases.length ? [`    ServerAlias ${aliases.join(' ')}`] : []),
       `    DocumentRoot "${vhost.documentRoot.replace(/\\/g, '/')}"`,
       `    <Directory "${vhost.documentRoot.replace(/\\/g, '/')}">`,
       '        Options -Indexes +FollowSymLinks',
@@ -294,18 +456,34 @@ export class VhostManager {
       '    Header always set Referrer-Policy "strict-origin-when-cross-origin"',
       '    Header always set X-Frame-Options "SAMEORIGIN"',
       '    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"',
+      ...(vhost.id === MAIN_SITE_VHOST_ID ? [
+        '    Header always set Cache-Control "private, no-store"',
+        '    Header always set Strict-Transport-Security "max-age=0"'
+      ] : []),
+      ...(vhost.id === MAIN_SITE_VHOST_ID && vhost.isolation ? this.phpMyAdminPassthrough(settings) : []),
       ...(vhost.setupRestricted ? ['    <Location />', '        Require local', '    </Location>'] : []),
       ...profile
     ]
     if (vhost.http && vhost.forceHttps && vhost.https) {
       const sslPort = settings.apacheSslPort === 443 ? '' : `:${settings.apacheSslPort}`
-      lines.push(`<VirtualHost *:${settings.apachePort}>`, `    ServerName ${vhost.serverName}`, ...(vhost.aliases.length ? [`    ServerAlias ${vhost.aliases.join(' ')}`] : []), `    Redirect permanent / https://${vhost.serverName}${sslPort}/`, '</VirtualHost>')
+      lines.push(`<VirtualHost *:${settings.apachePort}>`, `    ServerName ${vhost.serverName}`, ...(aliases.length ? [`    ServerAlias ${aliases.join(' ')}`] : []), `    Redirect 302 / https://${vhost.serverName}${sslPort}/`, '</VirtualHost>')
     } else if (vhost.http) lines.push(`<VirtualHost *:${settings.apachePort}>`, ...common, '</VirtualHost>')
     if (vhost.https) {
       const cert = this.certPaths(vhost, settings.runtimeRoot)
       lines.push(`<VirtualHost *:${settings.apacheSslPort}>`, ...common, '    SSLEngine on', `    SSLCertificateFile "${cert.crt.replace(/\\/g, '/')}"`, `    SSLCertificateKeyFile "${cert.key.replace(/\\/g, '/')}"`, '</VirtualHost>')
     }
     return lines.join('\n')
+  }
+
+  private phpMyAdminPassthrough(settings: RuntimeSettings): string[] {
+    const phpRoot = join(settings.runtimeRoot, 'php', settings.activePhpVersion).replace(/\\/g, '/')
+    return [
+      '    <Location /phpmyadmin>',
+      '        UnsetEnv PHPRC',
+      `        SetEnv PHPRC "${phpRoot}"`,
+      '        Action application/x-httpd-php "/weebx-php/php-cgi.exe"',
+      '    </Location>'
+    ]
   }
 
   private profileDirectives(vhost: VirtualHost, settings: RuntimeSettings): string[] {
@@ -331,11 +509,17 @@ export class VhostManager {
     ]
   }
 
-  private async ensureCertificate(vhost: VirtualHost): Promise<void> {
+  private async ensureCertificate(vhost: VirtualHost, force = false): Promise<void> {
     const settings = await this.store.getSettings()
     const paths = runtimePaths(settings)
     const cert = this.certPaths(vhost, settings.runtimeRoot)
-    try { await access(cert.crt); await access(cert.key); return } catch { /* create */ }
+    if (!force) {
+      try { await access(cert.crt); await access(cert.key); return } catch { /* create */ }
+    }
+    else {
+      await rm(cert.crt, { force: true }).catch(() => undefined)
+      await rm(cert.key, { force: true }).catch(() => undefined)
+    }
     await mkdir(dirname(cert.crt), { recursive: true })
     try { await access(paths.opensslExe) } catch {
       throw new Error('Could not create the HTTPS certificate. Install Apache first or disable HTTPS.')

@@ -1,4 +1,4 @@
-import { access, readFile, rm } from 'node:fs/promises'
+import { access, readdir, readFile, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { RuntimeSettings } from '../shared/types'
 import { copyFileBestEffort, ensureDirectory, isBusyFileError, writeTextFile } from './safe-file'
@@ -39,8 +39,10 @@ async function firstExisting(paths: string[]): Promise<string | null> {
 
 export async function welcomeTemplateDir(): Promise<string | null> {
   const files = extraRoots().flatMap((root) => [
-    join(root, 'runtime', 'htdocs', 'index.php'),
+    join(root, 'runtime', 'htdocs', 'main-site', 'index.php'),
     join(root, 'resources', 'site', 'index.php'),
+    join(root, 'resources', 'runtime', 'htdocs', 'main-site', 'index.php'),
+    join(root, 'runtime', 'htdocs', 'index.php'),
     join(root, 'resources', 'runtime', 'htdocs', 'index.php')
   ])
   const match = await firstExisting(files)
@@ -77,7 +79,17 @@ async function copyManagedText(source: string | null, destination: string, manag
   await writeManagedFile(destination, content, managed)
 }
 
+export async function mainSiteHasForeignApplication(htdocs: string): Promise<boolean> {
+  const index = join(htdocs, 'index.php')
+  if (await exists(index)) {
+    const content = await readFile(index, 'utf8').catch(() => '')
+    if (content && !isWeebxHomePage(content)) return true
+  }
+  return exists(join(htdocs, 'public', 'index.php'))
+}
+
 export async function ensureWelcomeSite(htdocs: string, settings: Pick<RuntimeSettings, 'apachePort' | 'apacheSslPort' | 'mariadbPort' | 'mariadbPassword' | 'activePhpVersion' | 'phpProfile' | 'setupComplete'>): Promise<void> {
+  if (await mainSiteHasForeignApplication(htdocs)) return
   const assets = join(htdocs, 'assets')
   await ensureDirectory(htdocs)
   await ensureDirectory(assets)
@@ -114,6 +126,37 @@ export async function ensureWelcomeSite(htdocs: string, settings: Pick<RuntimeSe
     }, null, 2)}\n`)
   } catch (error) {
     if (!isBusyFileError(error)) throw error
+  }
+}
+
+/** Remove WeebX-managed welcome files from a folder without deleting custom application files. */
+export async function removeManagedWelcomeFiles(folder: string): Promise<void> {
+  await migrateWelcomeFromHtdocsRoot(folder)
+}
+
+/** Move leftover WeebX welcome files out of the htdocs root after main-site became DocumentRoot. */
+export async function migrateWelcomeFromHtdocsRoot(htdocs: string): Promise<void> {
+  const rootIndex = join(htdocs, 'index.php')
+  if (await exists(rootIndex)) {
+    const content = await readFile(rootIndex, 'utf8').catch(() => '')
+    if (isWeebxHomePage(content)) await rm(rootIndex, { force: true }).catch(() => undefined)
+  }
+  const rootInfo = join(htdocs, 'phpinfo.php')
+  if (await exists(rootInfo)) {
+    const content = await readFile(rootInfo, 'utf8').catch(() => '')
+    if (isWeebxPhpInfo(content) || content.trim() === '<?php phpinfo();') await rm(rootInfo, { force: true }).catch(() => undefined)
+  }
+  const rootAssets = join(htdocs, 'assets')
+  if (await exists(rootAssets)) {
+    const stylesheet = join(rootAssets, 'weebx.css')
+    if (await exists(stylesheet)) {
+      const content = await readFile(stylesheet, 'utf8').catch(() => '')
+      if (isWeebxStylesheet(content)) await rm(stylesheet, { force: true }).catch(() => undefined)
+    }
+    await rm(join(rootAssets, 'weebx-runtime.json'), { force: true }).catch(() => undefined)
+    await rm(join(rootAssets, '.weebx-runtime.json'), { force: true }).catch(() => undefined)
+    const leftover = await readdir(rootAssets).catch(() => ['keep'])
+    if (!leftover.length) await rm(rootAssets, { recursive: true, force: true }).catch(() => undefined)
   }
 }
 

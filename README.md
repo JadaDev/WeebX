@@ -1,4 +1,4 @@
-# WeebX 2.2.15
+# WeebX 2.2.20
 
 WeebX is a **Local Web Hosting Stack Manager for Windows**. It brings Apache, multiple PHP runtimes, MariaDB, phpMyAdmin, virtual hosts, configuration, permissions, logs, portability, and service recovery into one desktop control panel.
 
@@ -6,18 +6,6 @@ WeebX is designed for both local development and real website hosting. Developme
 
 Website: [weebx.jadadev.com](https://weebx.jadadev.com/)  
 License: MIT
-
-## Screenshot
-
-![WeebX screenshot](docs/screenshot.png)
-
-## Video
-
-### WeebX Walkthrough
-
-Watch WeebX in action! See how to manage Apache, MariaDB (MySQL), PHP, virtual hosts, and more.
-
-https://github.com/user-attachments/assets/a8205b58-199b-413c-bf54-ad81d04361f0
 
 ## Included stack
 
@@ -34,7 +22,7 @@ MariaDB is the community-developed, open-source fork of MySQL used by WeebX. It 
 
 WeebX supports Windows 10 and Windows 11 x64.
 
-1. Run the versioned MSI (`WeebX-2.2.15-x64.msi`). The wizard shows WeebX-branded pages, requires license acceptance (I accept / I do not accept), and lets you choose the install folder.
+1. Run the versioned MSI (`WeebX-2.2.20-x64.msi`). The wizard shows WeebX-branded pages, requires license acceptance (I accept / I do not accept), and lets you choose the install folder.
 2. Open WeebX and let it prepare the bundled runtime.
 3. Complete first-run MariaDB setup:
    - keep the generated strong password;
@@ -56,6 +44,9 @@ C:\WeebX\
 ├─ mariadb\
 │  └─ data\
 ├─ htdocs\
+│  ├─ main-site\
+│  ├─ phpmyadmin\
+│  └─ wordpress10312026\   # catalog apps: name + MMDDYYYY, hostname stays wordpress.*
 ├─ certificates\
 ├─ logs\
 └─ tmp\
@@ -102,7 +93,7 @@ MariaDB listens on `127.0.0.1` by default, `LOCAL INFILE` is disabled, anonymous
 ### Pre-installed apps
 
 - Browse a searchable, categorized library of 17 open-source applications, including WordPress, Joomla, Drupal, MyBB, phpBB, MediaWiki, Nextcloud, Matomo, Moodle, OpenCart, PrestaShop, Grav, ProcessWire, FreshRSS, Piwigo, GitList, and PrivateBin.
-- Install into the default `localhost` website or create a separate side website as a local DNS host with its own folder and domain. Reserved `.localhost` names resolve automatically; other names can be mapped in the Windows hosts file and edited later from the app, Sites, or `C:\Windows\System32\drivers\etc\hosts`.
+- Choose a dedicated dated folder such as `htdocs\wordpress10312026` with its own Apache virtual host, or install onto the main website in `htdocs\main-site`. Dedicated installs keep a clean editable hostname (`wordpress.localhost` or `wordpress.example.com`) — the date is only in the folder name. A main-site install is served at `localhost` / `127.0.0.1`, so the dashboard Website button opens that app. You can empty `htdocs\main-site` first, or replace matching files and leave extra files in place. Only one catalog app can occupy the main site; phpMyAdmin stays at `/phpmyadmin`. Reserved `.localhost` names resolve automatically; other names can be mapped in the Windows hosts file or pointed at this machine with a DNS A record, then edited later from the app, Sites, or `C:\Windows\System32\drivers\etc\hosts`.
 - Select a compatible installed PHP version, inspect required modules, and add optional modules before installation. Required modules cannot be accidentally disabled.
 - Choose HTTP, local HTTPS, HTTP-to-HTTPS redirection, Windows hosts-file mapping, Production or Development PHP behavior, process-function blocking, and `.user.ini` policy from the wizard, then change those access settings later from Installed apps or Sites.
 - Generate editable database and username defaults while WeebX creates a random encrypted password and a least-privilege MariaDB identity.
@@ -111,7 +102,7 @@ MariaDB listens on `127.0.0.1` by default, `LOCAL INFILE` is disabled, anonymous
 - Keep browser installers local-only until their generated configuration is verified, then remove known installer folders and enable normal site access.
 - Track validation, download, extraction, provisioning, configuration, completion, rollback, and uninstall events in a persistent application audit trail.
 - Open installed websites and folders, and reveal DNS, site and admin URLs (forum, store, wiki, dashboard, and login links), document root, PHP runtime, administrator username, email, and password, and managed database host, port, name, username, and password through the existing protected confirmation flow. Administrator and database passwords are encrypted with Windows credentials. Optionally preserve files or database data while uninstall always removes the virtual host, database login, hosts-file entry, certificate, PHP profile, and generated logs. Uninstalling WeebX itself also strips leftover `# BEGIN WEEBX HOST` blocks from the Windows hosts file.
-- Verify a private ownership marker and the configured `htdocs` boundary before deleting application files. The default WeebX welcome site is backed up and restored when a default-site app is removed.
+- Verify a private ownership marker and the configured `htdocs` boundary before deleting application files. Leftover apps that accidentally occupied the htdocs root or localhost are moved onto a dedicated virtual host on first launch. An app you installed onto `htdocs\main-site` stays there; uninstalling it can restore the WeebX welcome page.
 
 ### Dashboard and service control
 
@@ -119,7 +110,7 @@ MariaDB listens on `127.0.0.1` by default, `LOCAL INFILE` is disabled, anonymous
 - Start or stop the complete stack with one action.
 - See service state, PID, port, uptime, and crash-recovery configuration.
 - Inspect port ownership and recent activity.
-- Open `htdocs`, the active website, or local-only phpMyAdmin.
+- Open `htdocs`, the main website at `localhost` (`htdocs\main-site`), or local-only phpMyAdmin.
 - Use the live service nucleus: quiet with no orbit at 0, one multi-node glowing path at 1, and two independently animated paths with smooth, staggered service particles when both services are running. Reduced-motion preferences are respected.
 - Receive environment-aware password and Development-mode security notices.
 - Keep the Development security notice icon and message vertically aligned at every window size.
@@ -199,7 +190,7 @@ NTFS permissions protect files from other Windows accounts; they do not sandbox 
 - Pack Apache, PHP, configuration, virtual hosts, websites, and optional MariaDB data into a WeebX Portal.
 - Unpack a Portal on another disk or machine and rebase its paths.
 - Repair paths after moving an installation.
-- Preserve websites during uninstall by copying them to `Documents\WeebX Sites`.
+- Preserve websites during uninstall by copying them to `Documents\WeebX Sites`. Confirming uninstall then starts Windows Installer (`msiexec`) so the MSI product is actually removed from Apps, not only the WeebX confirmation window.
 - Preserve websites and MariaDB data during normal component updates.
 - Never export root or per-site MariaDB credentials in a Portal; the destination returns to security setup and generates replacement site credentials.
 
@@ -254,7 +245,7 @@ npm run dist
 
 `npm run dist` is the production release path. It requires a trusted Windows code-signing certificate, signs WeebX.exe, the no-admin NSIS Setup EXE, and the enterprise MSI, then rejects the release unless every signature is valid and uses the same certificate. Release artifacts are assembled in `release\WeebX` only after these checks. Third-party packages come from the official PHP for Windows, Apache Lounge, MariaDB, and phpMyAdmin distribution channels and are verified with pinned SHA-256 hashes.
 
-For isolated local development only, `npm run dist:unsigned` creates unsigned test packages. Never upload or distribute that output. Any unsigned 2.2.15 artifacts must be replaced by a signed production rebuild before public use; source-level retry logic cannot establish publisher trust for an unsigned executable.
+For isolated local development only, `npm run dist:unsigned` creates unsigned test packages. Never upload or distribute that output. Any unsigned 2.2.20 artifacts must be replaced by a signed production rebuild before public use; source-level retry logic cannot establish publisher trust for an unsigned executable.
 
 The public website is in `website\WeebX`. Release files belong in `website\WeebX\Files`; direct access to that directory is denied and downloads pass through the validated endpoint.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { phpbbInstallYaml, phpQuote, siteUrl, yamlQuote } from './app-installers'
+import { gitListEnvFile, patchGitListFrontController, phpbbInstallYaml, phpQuote, siteUrl, yamlQuote } from './app-installers'
 import type { AppInstallContext } from './app-installers'
 import type { InternalPreinstalledApp } from './preinstalled-app-catalog'
 import type { PreinstalledAppInstallRequest, RuntimeSettings, VirtualHost } from '../shared/types'
@@ -27,6 +27,28 @@ describe('catalog installer helpers', () => {
     expect(yaml).toContain("server_name: 'phpbb.localhost'")
     expect(yaml).toContain("server_protocol: 'http://'")
     expect(yaml).not.toContain('\nname: admin\n')
+  })
+
+  it('patches GitList so a missing Symfony Dotenv class does not crash the front controller', () => {
+    const source = `<?php
+use Symfony\\Component\\Dotenv\\Dotenv;
+require __DIR__ . '/../vendor/autoload.php';
+$env = __DIR__ . '/../.env';
+if (is_readable($env)) {
+    (new Dotenv())->load($env);
+}
+$env = $_SERVER['APP_ENV'] = $_ENV['APP_ENV'] ?? $_SERVER['APP_ENV'] ?? 'prod';
+`
+    const patched = patchGitListFrontController(source)
+    expect(patched).toContain('function weebxLoadDotenv')
+    expect(patched).not.toContain('(new Dotenv())->load($env);')
+    expect(patchGitListFrontController(patched)).toBe(patched)
+    const env = gitListEnvFile('APP_ENV=dev\nAPP_SECRET=keep-me\n', 'C:/WeebX/htdocs/gitlist/repositories', 'fresh-secret')
+    expect(env).toContain('APP_ENV=prod')
+    expect(env).toContain('APP_DEBUG=0')
+    expect(env).toContain('APP_SECRET=keep-me')
+    expect(env).toContain('DEFAULT_REPOSITORY_DIR=C:/WeebX/htdocs/gitlist/repositories')
+    expect(env).not.toContain('fresh-secret')
   })
 })
 

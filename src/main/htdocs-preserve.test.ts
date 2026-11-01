@@ -7,8 +7,10 @@ import { htdocsKeepDestination, preserveHtdocs, shouldCopyHtdocsEntry } from './
 describe('htdocs preserve', () => {
   it('keeps user sites and skips phpMyAdmin', () => {
     expect(shouldCopyHtdocsEntry('mysite')).toBe(true)
+    expect(shouldCopyHtdocsEntry('wordpress10312026')).toBe(true)
     expect(shouldCopyHtdocsEntry('phpmyadmin')).toBe(false)
     expect(shouldCopyHtdocsEntry('phpMyAdmin')).toBe(false)
+    expect(shouldCopyHtdocsEntry('main-site')).toBe(false)
     expect(htdocsKeepDestination('D:\\Docs')).toBe('D:\\Docs\\WeebX Sites')
   })
 

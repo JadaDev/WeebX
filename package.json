@@ -1,6 +1,6 @@
 {
   "name": "weebx",
-  "version": "2.2.15",
+  "version": "2.2.20",
   "description": "A Local Web Hosting Stack Manager for Windows with Apache, PHP and MariaDB",
   "main": "out/main/index.js",
   "author": "JadaDev",
