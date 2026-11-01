@@ -7,6 +7,18 @@ WeebX is designed for both local development and real website hosting. Developme
 Website: [weebx.jadadev.com](https://weebx.jadadev.com/)  
 License: MIT
 
+## Screenshot
+
+![WeebX screenshot](docs/screenshot.png)
+
+## Video
+
+### WeebX Walkthrough
+
+Watch WeebX in action! See how to manage Apache, MariaDB (MySQL), PHP, virtual hosts, and more.
+
+https://github.com/user-attachments/assets/a8205b58-199b-413c-bf54-ad81d04361f0
+
 ## Included stack
 
 | Component | Included version |
